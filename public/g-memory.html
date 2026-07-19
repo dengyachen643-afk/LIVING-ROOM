@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#596a5d">
+    <title>G老师的记忆</title>
+    <link rel="stylesheet" href="/g-memory.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="back-link" href="/" aria-label="返回客厅">←</a>
+      <div class="identity"><span class="avatar">G</span><div><strong>G老师的记忆</strong><small id="connection-status">未连接</small></div></div>
+      <button id="export-button" class="quiet-button" type="button" hidden>导出</button>
+    </header>
+
+    <main class="page">
+      <section id="auth-panel" class="auth-card">
+        <span class="avatar large">G</span>
+        <h1>打开记忆册</h1>
+        <p>输入专属编辑密钥</p>
+        <form id="auth-form" class="auth-form">
+          <input id="token-input" type="password" autocomplete="new-password" placeholder="编辑密钥" aria-label="G老师记忆编辑密钥" required>
+          <button type="submit">进入</button>
+        </form>
+      </section>
+
+      <div id="workspace" class="workspace" hidden>
+        <section class="editor-card">
+          <div class="section-heading"><div><span id="form-kicker">NEW MEMORY</span><h1 id="form-title">记住一件事</h1></div><button id="cancel-edit" class="quiet-button" type="button" hidden>取消编辑</button></div>
+          <form id="memory-editor" class="memory-editor">
+            <label>
+              <span>内容</span>
+              <textarea id="memory-text" rows="4" maxlength="4000" placeholder="写下一条以后需要想起的事实、偏好、经历或约定…" required></textarea>
+            </label>
+            <div class="field-row">
+              <label><span>分类</span><select id="memory-category"><option value="关于你">关于你</option><option value="关于我们">关于我们</option><option value="G老师人格">G老师人格</option><option value="重要经历">重要经历</option><option value="未完待续">未完待续</option><option value="其他">其他</option></select></label>
+              <label><span>重要度</span><select id="memory-importance"><option value="3">普通</option><option value="4">重要</option><option value="5">核心</option><option value="2">较低</option><option value="1">临时</option></select></label>
+            </div>
+            <label><span>标签</span><input id="memory-tags" maxlength="300" placeholder="用逗号分隔，可留空"></label>
+            <button id="save-button" class="primary-button" type="submit">保存到 G老师记忆</button>
+          </form>
+        </section>
+
+        <section class="library">
+          <header class="library-header">
+            <div><span>MEMORY LIBRARY</span><h2>已经记住的事 <em id="memory-count">0</em></h2></div>
+            <label class="search"><span>⌕</span><input id="memory-search" type="search" placeholder="搜索记忆" aria-label="搜索记忆"></label>
+          </header>
+          <div id="memory-list" class="memory-list" aria-live="polite"></div>
+        </section>
+      </div>
+    </main>
+
+    <div id="toast" class="toast" role="status" hidden></div>
+    <script type="module" src="/g-memory.js"></script>
+  </body>
+</html>

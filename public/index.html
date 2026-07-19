@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#a6b39c">
+    <title>LIVING ROOM</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div id="app-shell" class="app-shell">
+      <button id="sidebar-overlay" class="sidebar-overlay" type="button" aria-label="关闭侧栏" hidden></button>
+
+      <aside class="sidebar" aria-label="聊天设置">
+        <header class="sidebar-header">
+          <div class="app-title">
+            <span class="app-mark" aria-hidden="true">聊</span>
+            <strong>LIVING ROOM</strong>
+          </div>
+          <button id="sidebar-close" class="icon-button sidebar-close" type="button" aria-label="关闭侧栏">×</button>
+        </header>
+
+        <div class="conversation-list" aria-label="聊天列表">
+          <button class="conversation-card active" type="button" data-chat="group">
+            <span class="conversation-avatar" aria-hidden="true"><i>G</i><i>Ki</i><i>K</i></span>
+            <span class="conversation-copy">
+              <span><strong>客厅</strong><time>现在</time></span>
+              <span>Gen、Kimi、K</span>
+            </span>
+          </button>
+          <button class="conversation-card" type="button" data-chat="gen">
+            <span class="contact-avatar gen-avatar" aria-hidden="true">G</span>
+            <span class="conversation-copy">
+              <span><strong>Gen</strong><time></time></span>
+              <span id="gen-card-preview">私聊</span>
+            </span>
+          </button>
+          <button class="conversation-card" type="button" data-chat="kimi">
+            <span class="contact-avatar kimi-avatar" aria-hidden="true">Ki</span>
+            <span class="conversation-copy">
+              <span><strong>Kimi</strong><time></time></span>
+              <span id="kimi-card-preview">私聊</span>
+            </span>
+          </button>
+          <button class="conversation-card disabled" type="button" disabled>
+            <span class="contact-avatar k-avatar" aria-hidden="true">K</span>
+            <span class="conversation-copy">
+              <span><strong>K</strong><time></time></span>
+              <span>还没回来</span>
+            </span>
+          </button>
+        </div>
+
+        <section class="side-section members-section">
+          <div class="section-title"><span>成员</span><span id="participant-count">0</span></div>
+          <div id="provider-list" class="provider-list" aria-live="polite"></div>
+        </section>
+
+        <footer class="sidebar-footer">
+          <span id="turn-budget">最多 8 句</span>
+          <button id="clear-button" class="text-button" type="button">清空聊天</button>
+        </footer>
+      </aside>
+
+      <button id="memory-overlay" class="memory-overlay" type="button" aria-label="关闭记忆" hidden></button>
+      <aside id="memory-panel" class="memory-panel" aria-label="长期记忆" hidden>
+        <header class="memory-panel-header">
+          <div><strong id="memory-title">记忆</strong><span id="memory-count">0</span></div>
+          <button id="memory-close" class="icon-button" type="button" aria-label="关闭记忆">×</button>
+        </header>
+        <form id="memory-form" class="memory-form">
+          <input id="memory-input" maxlength="2000" placeholder="记住一件事" aria-label="新增长期记忆">
+          <button type="submit" aria-label="保存长期记忆">＋</button>
+        </form>
+        <div id="memory-list" class="memory-list"></div>
+      </aside>
+
+      <main class="main-panel">
+        <header class="topbar">
+          <button id="sidebar-toggle" class="icon-button menu-button" type="button" aria-label="打开侧栏">☰</button>
+          <div class="channel-title">
+            <div id="group-avatar" class="group-avatar" aria-hidden="true"><i>G</i><i>Ki</i><i>K</i></div>
+            <div id="private-avatar" class="contact-avatar" aria-hidden="true" hidden></div>
+            <div>
+              <h1 id="channel-name">客厅</h1>
+              <p id="channel-subtitle">Gen、Kimi、K</p>
+            </div>
+          </div>
+          <button id="kimi-memory-button" class="topbar-action" type="button" hidden>记忆</button>
+          <button id="kimi-settings-button" class="topbar-action" type="button" hidden>API</button>
+          <label id="relay-control" class="relay-toggle" for="relay-toggle" title="允许成员互相接话">
+            <input id="relay-toggle" type="checkbox" checked>
+            <span>自由接话</span>
+          </label>
+        </header>
+
+        <section id="chat" class="chat" aria-live="polite" aria-label="群聊">
+          <form id="kimi-setup" class="kimi-setup" hidden>
+            <div class="contact-avatar kimi-avatar" aria-hidden="true">K</div>
+            <strong>连接 Kimi</strong>
+            <div class="key-row">
+              <input id="kimi-api-key" type="password" autocomplete="new-password" placeholder="Kimi API Key" aria-label="Kimi API Key">
+              <button type="submit">连接</button>
+            </div>
+            <small>输入一次，保存在这台电脑，手机和电脑共用</small>
+          </form>
+          <div id="empty-state" class="empty-state">
+            <div id="empty-avatar" class="empty-avatar" aria-hidden="true">客</div>
+            <strong id="empty-name">客厅</strong>
+            <span id="empty-copy">发条消息吧</span>
+          </div>
+          <div id="messages" class="messages"></div>
+          <div id="copy-toast" class="copy-toast" role="status" aria-live="polite" hidden>已复制</div>
+        </section>
+
+        <footer id="composer-wrap" class="composer-wrap">
+          <div id="run-status" class="run-status" hidden></div>
+          <div id="mention-bar" class="mention-bar" aria-label="快速点名"></div>
+          <div id="image-preview" class="image-preview" aria-label="待发送图片" hidden></div>
+          <div id="emoji-panel" class="emoji-panel" aria-label="Emoji" hidden>
+            <button type="button">😊</button><button type="button">😂</button><button type="button">🥹</button><button type="button">❤️</button>
+            <button type="button">👀</button><button type="button">🤔</button><button type="button">👍</button><button type="button">🫂</button>
+          </div>
+          <form id="composer" class="composer">
+            <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+            <button id="attach-button" class="attach-button" type="button" aria-label="上传图片">＋</button>
+            <button id="emoji-button" class="emoji-button" type="button" aria-label="选择 Emoji">☺</button>
+            <textarea id="message-input" rows="1" maxlength="8000" placeholder="消息" aria-label="消息"></textarea>
+            <div class="action-buttons">
+              <button id="stop-button" class="stop-button" type="button" hidden aria-label="停止接话">■</button>
+              <button id="send-button" class="send-button" type="submit" aria-label="发送">➤</button>
+            </div>
+          </form>
+        </footer>
+      </main>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "name": "living-room",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A persistent group chat where people and AI models can @mention each other without infinite loops.",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "dev": "node --watch --env-file-if-exists=.env src/server.js",
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/server.js && node --check src/store.js && node --check src/providers.js && node --check src/groupchat.js && node --check src/kimi-private.js && node --check src/kimi-memory.js && node --check src/gen-private.js && node --check src/prompt-time.js && node --check src/embeddings.js && node --check public/app.js && node --check public/g-memory.js && node --check scripts/reindex-memories.js && node --check scripts/import-g-memory.js",
+    "reindex": "node --env-file-if-exists=.env scripts/reindex-memories.js",
+    "import:g-memory": "node --env-file-if-exists=.env scripts/import-g-memory.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "3.8.1"
+  }
+}
