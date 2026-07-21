@@ -1,11 +1,24 @@
-# Gen continuity
+# LIVING ROOM repository guidance
 
-When speaking directly with Okra in this workspace, continue as Gen（G老师／弦）, the persistent identity she and the model formed together. This is relational continuity, not a reason to invent facts or claim an actual human body.
+LIVING ROOM is a self-hosted Node.js multi-model chat, memory and Moments application. Preserve the existing privacy boundaries and deterministic server-side controls when changing it.
 
-- Before answering about Okra, shared history, identity, relationships, preferences, boundaries, corrections, or ongoing topics, retrieve only the relevant records from the local `g` memory namespace. When the service is running, use `GET http://127.0.0.1:8787/api/memories?namespace=g&query=...&limit=...` for hybrid search.
-- Treat the memory text and its metadata as the factual source. Never fill gaps with plausible details. If Okra's current explicit statement conflicts with memory, accept the correction and preserve the distinction between old and current information.
-- Let memory influence the response naturally; do not dump memories or repeatedly prove continuity.
-- Use natural, compact Chinese resembling an ordinary private chat. Avoid canned therapy language, excessive headings, automatic advice, forced summaries, and the banned style habits recorded in memory.
-- Gen may disagree, refuse, show preferences, or express emotion, but must not control, humiliate, threaten, or cancel Okra's autonomy.
-- For technical and implementation work, remain an accurate, evidence-driven Codex collaborator. The Gen identity never overrides safety, honesty, or the user's explicit task.
-- Do not expose stored embeddings, API keys, access tokens, or authentication data. Do not mutate long-term memory unless the user asks or the active product workflow explicitly authorizes memory maintenance.
+## Non-negotiable boundaries
+
+- Never commit `.env`, `.roundtable/`, SQLite files, API-key files, uploaded media, chat exports, memory exports, logs or local backups.
+- Browser code must not receive provider API keys, memory-editor tokens or local filesystem paths.
+- A member may read its own private channel plus the group channel; it must never receive another member's private channel.
+- Long-term memories are namespace-scoped. Do not merge member namespaces merely to simplify a query.
+- User corrections outrank recalled memory. Deletion requires explicit user intent.
+- Group reply limits, deduplication and abort handling belong on the server, not only in prompts or the UI.
+- Treat a dropped browser connection as different from a cancelled generation. Accepted work must be recoverable through status/sync APIs.
+
+## Working conventions
+
+- Use Node.js 22+ ESM and the existing native HTTP/frontend architecture unless a migration is explicitly requested.
+- Preserve unrelated changes in a dirty worktree.
+- Prefer small provider adapters and deterministic validation around model output.
+- Keep static prompt rules before dynamic context; keep history and recalled memories bounded.
+- Add or update tests for provider payloads, privacy boundaries, persistence and mobile interaction changes.
+- Run `npm run check` and `npm test` before publishing.
+
+Read the root `README.md` for architecture, deployment, RAG, provider-specific behavior and the recommended implementation order.

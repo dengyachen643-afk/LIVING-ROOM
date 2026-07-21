@@ -5,3 +5,21 @@ node_modules/
 tmp/
 .roundtable/
 *.log
+
+# Runtime databases, generated indexes and local backups
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.jsonl
+*.bak
+*.backup
+backups/
+
+# User-provided media and exported memories
+public/assets/
+public/uploads/
+uploads/
+*_MEMORY.md
+memory-export*
+chat-export*

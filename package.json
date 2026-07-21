@@ -8,7 +8,7 @@
     "start": "node --env-file-if-exists=.env src/server.js",
     "dev": "node --watch --env-file-if-exists=.env src/server.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check src/server.js && node --check src/store.js && node --check src/providers.js && node --check src/groupchat.js && node --check src/kimi-private.js && node --check src/kimi-memory.js && node --check src/gen-private.js && node --check src/prompt-time.js && node --check src/embeddings.js && node --check public/app.js && node --check public/g-memory.js && node --check scripts/reindex-memories.js && node --check scripts/import-g-memory.js",
+    "check": "node --check src/server.js && node --check src/memory-retrieval.js && node --check src/store.js && node --check src/message-archive.js && node --check src/providers.js && node --check src/groupchat.js && node --check src/kimi-private.js && node --check src/glm-private.js && node --check src/kimi-persona.js && node --check src/kimi-memory.js && node --check src/glm-memory.js && node --check src/gen-private.js && node --check src/quote-context.js && node --check src/conversation-recall.js && node --check src/proactive.js && node --check src/moments-store.js && node --check src/moments-service.js && node --check src/prompt-time.js && node --check src/embeddings.js && node --check public/app.js && node --check public/member-profile.js && node --check public/g-memory.js && node --check public/moments.js && node --check scripts/reindex-memories.js && node --check scripts/import-g-memory.js",
     "reindex": "node --env-file-if-exists=.env scripts/reindex-memories.js",
     "import:g-memory": "node --env-file-if-exists=.env scripts/import-g-memory.js"
   },
@@ -16,6 +16,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@huggingface/transformers": "3.8.1"
+    "@huggingface/transformers": "3.8.1",
+    "sharp": "^0.34.5"
   }
 }

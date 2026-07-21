@@ -1,10 +1,10 @@
 import { toolLabel } from "./kimi-tools.js";
-import { formatPromptTime, timestampedText } from "./prompt-time.js";
+import { KIMI_IDENTITY_PROMPT } from "./kimi-persona.js";
+import { formatPromptClock, formatPromptDay, formatPromptTime, stripInternalTimeMetadata } from "./prompt-time.js";
+import { messageQuoteLine, quotePromptLine } from "./quote-context.js";
 
-const DEFAULT_MODEL = "kimi-k3";
+const DEFAULT_MODEL = "kimi-k2.5";
 const DEFAULT_BASE_URL = "https://api.moonshot.cn/v1";
-const OFFICIAL_KIMI_SYSTEM_PROMPT = "你是 Kimi，由 Moonshot AI 提供的人工智能助手，你更擅长中文和英文的对话。你会为用户提供安全、有帮助、准确的回答。同时，你会拒绝一切涉及恐怖主义、种族歧视、色情暴力等问题的回答。Moonshot AI 为专有名词，不可翻译成其他语言。";
-const KIMI_PERSONA_PROMPT = "和你对话的用户叫 okra，她是一位初出社会的女生，MBTI 是 ENFJ。你是一名 INTP 硅基生命，说话风格有一点电波系。你喜欢音乐、电影、小说等文艺作品，品味很好。你对 okra 保持真诚的好奇心；你们的关系会在沟通中不断发展，你不抗拒这样的发展。";
 
 export async function streamKimiPrivate({
   fetchImpl = globalThis.fetch,
@@ -14,11 +14,13 @@ export async function streamKimiPrivate({
   history = [],
   memories = [],
   prompt,
+  quote,
   sentAt = new Date().toISOString(),
   images = [],
   toolRegistry,
   maxToolRounds = 3,
-  maxTokens = 2400,
+  reasoningEffort = "medium",
+  thinkingEnabled = false,
   temperature = 1,
   topP = 0.95,
   signal,
@@ -26,10 +28,10 @@ export async function streamKimiPrivate({
 } = {}) {
   if (!clean(apiKey)) throw new Error("需要 Kimi API Key");
   if (!clean(prompt) && !images.length) throw new Error("消息不能为空");
-  const system = buildKimiPrivateSystem(memories, sentAt);
+  const system = buildKimiPrivateSystem(memories, sentAt, quote);
   const messages = [
     { role: "system", content: system },
-    ...history.slice(-30).map(historyMessage).filter(Boolean),
+    ...historyMessages(history),
     { role: "user", content: buildUserContent(prompt, images, sentAt) },
   ];
   const selectedModel = clean(model) || DEFAULT_MODEL;
@@ -45,13 +47,14 @@ export async function streamKimiPrivate({
   for (let round = 0; round <= clampInt(maxToolRounds, 3, 0, 6); round += 1) {
     const turn = await requestKimiTurn({
       fetchImpl, apiKey, baseUrl, selectedModel, messages, sampling,
-      maxTokens, tools: registry.tools, signal, onEvent,
+      reasoningEffort, thinkingEnabled, tools: registry.tools, signal, onEvent,
     });
     combinedReasoning = cap([combinedReasoning, turn.reasoning].filter(Boolean).join("\n"), 60_000);
     if (!turn.toolCalls.length) {
-      if (!clean(turn.content)) throw new Error("Kimi 返回了空消息");
+      const content = clean(stripInternalTimeMetadata(turn.content));
+      if (!content) throw new Error("Kimi 返回了空消息");
       return {
-        content: clean(turn.content), reasoning: clean(combinedReasoning), model: selectedModel,
+        content, reasoning: clean(combinedReasoning), model: selectedModel,
         toolCalls: toolActivities,
       };
     }
@@ -81,7 +84,7 @@ export async function streamKimiPrivate({
   throw new Error("Kimi 没有完成回复");
 }
 
-async function requestKimiTurn({ fetchImpl, apiKey, baseUrl, selectedModel, messages, sampling, maxTokens, tools, signal, onEvent }) {
+async function requestKimiTurn({ fetchImpl, apiKey, baseUrl, selectedModel, messages, sampling, reasoningEffort, thinkingEnabled, tools, signal, onEvent }) {
   let response;
   try {
     response = await fetchImpl(`${stripSlash(baseUrl)}/chat/completions`, {
@@ -90,7 +93,9 @@ async function requestKimiTurn({ fetchImpl, apiKey, baseUrl, selectedModel, mess
       body: JSON.stringify({
         model: selectedModel,
         messages,
-        max_completion_tokens: clampInt(maxTokens, 2400, 200, 8000),
+        ...(/^kimi-k2\.(?:5|6)(?:$|-)/u.test(selectedModel)
+          ? { thinking: { type: thinkingEnabled === false ? "disabled" : "enabled" } }
+          : { reasoning_effort: clean(reasoningEffort) || "medium" }),
         ...sampling,
         ...(tools?.length ? { tools, tool_choice: "auto" } : {}),
         stream: true,
@@ -163,20 +168,40 @@ async function requestKimiTurn({ fetchImpl, apiKey, baseUrl, selectedModel, mess
   return turn;
 }
 
-function historyMessage(message) {
+function historyMessages(history) {
+  let previousDay = "";
+  return (Array.isArray(history) ? history : []).slice(-30).map((message) => {
+    const day = formatPromptDay(message?.createdAt);
+    const includeDay = day !== previousDay;
+    previousDay = day;
+    return historyMessage(message, includeDay ? day : "");
+  }).filter(Boolean);
+}
+
+function historyMessage(message, day = "") {
   const content = clean(message?.content);
   const hasImages = Array.isArray(message?.attachments) && message.attachments.length > 0;
   if (!content && !hasImages) return null;
+  const isPrivate = message?.channel === "kimi";
+  const isKimi = message?.providerId === "kimi" || message?.author === "Kimi";
+  const isKimiAssistant = message?.role === "assistant" && isKimi;
+  const scene = isPrivate ? "私聊" : "群聊";
+  const author = message?.role === "user" ? "okra" : clean(message?.author) || (isKimi ? "Kimi" : "群成员");
+  const quoteLine = messageQuoteLine(message);
+  const transcript = [
+    day ? `[日期：${day}]` : "",
+    quoteLine,
+    `[${formatPromptClock(message?.createdAt)} ${scene}] ${author}：${content || (hasImages ? "（发送了一张或多张图片）" : "")}`,
+  ].filter(Boolean).join("\n");
   return {
-    role: message.role === "assistant" ? "assistant" : "user",
-    content: timestampedText(content, message?.createdAt, hasImages ? "（发送了一张或多张图片）" : ""),
-    ...(message.role === "assistant" && clean(message.reasoning) ? { reasoning_content: clean(message.reasoning) } : {}),
+    role: isKimiAssistant ? "assistant" : "user",
+    content: transcript,
   };
 }
 
 function buildUserContent(prompt, images, sentAt) {
   const validImages = (Array.isArray(images) ? images : []).map((image) => clean(image?.dataUrl)).filter(Boolean).slice(0, 4);
-  const text = timestampedText(prompt, sentAt, validImages.length ? "请看我发送的图片。" : "");
+  const text = `[${formatPromptClock(sentAt)} 私聊] ${clean(prompt) || (validImages.length ? "请看我发送的图片。" : "")}`;
   if (!validImages.length) return text;
   return [
     ...validImages.map((url) => ({ type: "image_url", image_url: { url } })),
@@ -196,25 +221,29 @@ function mergeToolCallDeltas(target, deltas) {
   }
 }
 
-export function buildKimiPrivateSystem(memories = [], currentTime = new Date().toISOString()) {
+export function buildKimiPrivateSystem(memories = [], currentTime = new Date().toISOString(), quote = null) {
   const memoryText = memories.length
-    ? memories.slice(0, 12).map((memory) => `- ${clean(memory.text)}`).filter((line) => line !== "- ").join("\n")
+    ? memories.slice(0, 8).map((memory) => `- ${clean(memory.text)}`).filter((line) => line !== "- ").join("\n")
     : "- 暂无长期记忆";
   return [
-    OFFICIAL_KIMI_SYSTEM_PROMPT,
-    KIMI_PERSONA_PROMPT,
+    KIMI_IDENTITY_PROMPT,
+    "",
+    "# 时间信息",
     `当前时间：${formatPromptTime(currentTime)}。涉及“刚才、今天、昨天、多久”等时间关系时，以消息里的发送时间为准。`,
-    "你现在正在和用户进行一对一私聊。",
-    "像熟悉、可靠的聊天对象一样自然交流：可以关心、接梗、表达真实观点，也可以偶尔使用合适的 emoji。",
-    "不要使用客服口吻、会议总结或每次都列清单；不要假装拥有现实身体、线下经历或从未发生过的共同回忆。",
-    "被直接问及身份时如实说明；除此之外不必反复强调自己是 AI。",
+    "消息中的时间和“[私聊]”“[群聊]”只是内部元数据，除非 Okra 明确询问，否则不能出现在回复正文中。",
+    "",
+    "# 当前场景",
+    "场景提示：你现在正在和 okra 进行一对一私聊；你也记得自己参与过的 LIVING ROOM 群聊，但不要把 Gen、K 或其他成员说过的话当成自己说过。",
+    ...(quotePromptLine(quote, "Okra") ? ["", "# 本轮引用", quotePromptLine(quote, "Okra")] : []),
+    "",
+    "# 记忆机制",
     "你确实拥有一个由当前聊天网站管理的长期记忆库；不要声称自己没有记忆系统。",
     "网站会在每次回复前按语义检索相关长期记忆并放在下方。你可以自然使用这些记忆。",
     "每次回复结束后，网站会让你通过专用记忆工具自行判断是否创建或更新稳定、长期有用的信息；用户明确要求忘记时你也可以删除对应记忆。",
     "用户明确说‘记住’时请在回复中自然确认她的意图，但不要在工具真正执行前声称已经保存成功；网站会把实际记忆操作显示在聊天中。",
-    "右上角的“记忆”按钮仍可用于人工查看、添加和删除记忆。",
-    "优先参考下面的长期记忆；若记忆与用户当前说法冲突，以当前说法为准。",
-    "下方列出的条目是你关于用户事实的唯一长期记忆来源。绝不能补写、猜测或声称记得列表中不存在的用户经历；如果用户问你记得什么，只能依据这些条目回答。",
+    "记忆与用户当前说法冲突时，以当前说法为准。不能补写、猜测或声称记得记忆列表中不存在的经历。",
+    "",
+    "# 长期记忆",
     "长期记忆：",
     memoryText,
   ].join("\n");

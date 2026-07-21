@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { formatGlmSearchContext, runGlmWebSearch, shouldGlmWebSearch } from "./glm-search.js";
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 1600;
 const MAX_CAPTURE_CHARS = 1_000_000;
@@ -14,7 +15,8 @@ export function createProviders(env = process.env, dependencies = {}) {
   const kLocal = createClaudeCodeProvider(env, spawnImpl);
   return [
     genLocal.available ? genLocal : genApi,
-    createKimiProvider(env, fetchImpl, maxOutputTokens),
+    createKimiProvider(env, fetchImpl),
+    createGlmProvider(env, fetchImpl, maxOutputTokens),
     kLocal.available ? kLocal : kApi,
   ];
 }
@@ -47,9 +49,9 @@ function createOpenAIProvider(env, fetchImpl, maxOutputTokens) {
   };
 }
 
-function createKimiProvider(env, fetchImpl, maxOutputTokens) {
+function createKimiProvider(env, fetchImpl) {
   const apiKey = clean(env.MOONSHOT_API_KEY);
-  const model = clean(env.KIMI_MODEL) || "kimi-k3";
+  const model = clean(env.KIMI_MODEL) || "kimi-k2.5";
   const baseUrl = stripSlash(clean(env.KIMI_BASE_URL) || "https://api.moonshot.cn/v1");
   return {
     id: "kimi",
@@ -58,11 +60,14 @@ function createKimiProvider(env, fetchImpl, maxOutputTokens) {
     model,
     available: Boolean(apiKey),
     unavailableReason: apiKey ? "" : "缺少 MOONSHOT_API_KEY",
-    async generate({ system, prompt, signal, images = [] }) {
+    async generate({ system, prompt, signal, images = [], thinkingEnabled = true }) {
       const userContent = images.length ? [
         ...images.slice(0, 4).map((image) => ({ type: "image_url", image_url: { url: image.dataUrl } })),
         { type: "text", text: prompt || "请看这张图片。" },
       ] : prompt;
+      const generationOptions = /^kimi-k2\.(?:5|6)(?:$|-)/u.test(model)
+        ? { thinking: { type: thinkingEnabled === false ? "disabled" : "enabled" } }
+        : { reasoning_effort: clean(env.KIMI_REASONING_EFFORT) || "medium" };
       const payload = await postJson(fetchImpl, `${baseUrl}/chat/completions`, {
         Authorization: `Bearer ${apiKey}`,
       }, {
@@ -71,10 +76,63 @@ function createKimiProvider(env, fetchImpl, maxOutputTokens) {
           { role: "system", content: system },
           { role: "user", content: userContent },
         ],
-        max_completion_tokens: maxOutputTokens,
+        ...generationOptions,
       }, signal, "Kimi");
       const text = payload?.choices?.[0]?.message?.content;
       if (!clean(text)) throw new Error("Kimi 返回了空消息");
+      return clean(text);
+    },
+  };
+}
+
+function createGlmProvider(env, fetchImpl, maxOutputTokens) {
+  const apiKey = clean(env.GLM_API_KEY);
+  const model = clean(env.GLM_MODEL) || "glm-5.1";
+  const visionModel = clean(env.GLM_VISION_MODEL) || "glm-5v-turbo";
+  const baseUrl = stripSlash(clean(env.GLM_BASE_URL) || "https://open.bigmodel.cn/api/paas/v4");
+  return {
+    id: "glm",
+    label: "Shin",
+    kind: "API",
+    model,
+    available: Boolean(apiKey),
+    unavailableReason: apiKey ? "" : "缺少 GLM_API_KEY",
+    async generate({ system, prompt, signal, images = [], searchText = "", allowWebSearch = true }) {
+      const hasImages = Array.isArray(images) && images.length > 0;
+      const searchSource = clean(searchText) || clean(prompt);
+      let groundedPrompt = prompt;
+      if (allowWebSearch !== false && !hasImages && shouldGlmWebSearch(searchSource)) {
+        const search = await runGlmWebSearch({ fetchImpl, apiKey, baseUrl, query: searchSource, signal });
+        groundedPrompt = `${prompt}\n\n${formatGlmSearchContext(search)}`;
+      }
+      const userContent = hasImages ? [
+        ...images.slice(0, 4).map((image) => ({ type: "image_url", image_url: { url: image.dataUrl } })),
+        { type: "text", text: prompt || "请看这张图片。" },
+      ] : groundedPrompt;
+      const requestBody = {
+        model: hasImages ? visionModel : model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: userContent },
+        ],
+        thinking: { type: "enabled" },
+        max_tokens: Math.max(4096, maxOutputTokens),
+      };
+      let payload = await postJson(fetchImpl, `${baseUrl}/chat/completions`, {
+        Authorization: `Bearer ${apiKey}`,
+      }, requestBody, signal, "GLM");
+      let text = payload?.choices?.[0]?.message?.content;
+      if (!clean(text) && clean(payload?.choices?.[0]?.message?.reasoning_content)) {
+        payload = await postJson(fetchImpl, `${baseUrl}/chat/completions`, {
+          Authorization: `Bearer ${apiKey}`,
+        }, {
+          ...requestBody,
+          thinking: { type: "disabled" },
+          max_tokens: Math.max(1200, maxOutputTokens),
+        }, signal, "GLM");
+        text = payload?.choices?.[0]?.message?.content;
+      }
+      if (!clean(text)) throw new Error("GLM 返回了空消息");
       return clean(text);
     },
   };
@@ -169,7 +227,6 @@ function createCodexCliProvider(env, spawnImpl) {
         "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
         "--sandbox", "read-only", "--skip-git-repo-check", "--color", "never", "--json",
         "-c", `model_reasoning_effort=\"${clean(env.GEN_REASONING_EFFORT) || "medium"}\"`,
-        "-c", "service_tier=\"priority\"",
         "-c", "web_search=\"live\"",
         "-C", runtimeDir,
       ];

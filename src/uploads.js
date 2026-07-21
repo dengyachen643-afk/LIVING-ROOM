@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 
 const MIME_TO_EXTENSION = new Map([
   ["image/png", ".png"],
@@ -40,10 +40,69 @@ export async function readUploadedImage(filePath, mimeType) {
   return `data:${mimeType};base64,${bytes.toString("base64")}`;
 }
 
+export async function saveRemoteImage(imageUrl, fetchImpl, uploadDir, { maxBytes = 12_000_000 } = {}) {
+  let parsed;
+  try { parsed = new URL(String(imageUrl || "")); } catch { throw httpError(400, "生成图片地址无效"); }
+  if (parsed.protocol !== "https:") throw httpError(400, "生成图片地址必须使用 HTTPS");
+  const response = await fetchImpl(parsed, { redirect: "follow" });
+  if (!response.ok) throw new Error(`下载生成图片失败 (${response.status})`);
+  const declared = Number(response.headers.get("content-length") || 0);
+  if (declared > maxBytes) throw httpError(413, "生成图片文件过大");
+  const mimeType = String(response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
+  if (!MIME_TO_EXTENSION.has(mimeType)) throw httpError(400, "生成服务返回了不支持的图片格式");
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > maxBytes) throw httpError(413, "生成图片文件过大");
+  if (!matchesSignature(bytes, mimeType)) throw httpError(400, "生成服务返回的图片内容无效");
+  await mkdir(uploadDir, { recursive: true });
+  const filename = `${globalThis.crypto.randomUUID()}${MIME_TO_EXTENSION.get(mimeType)}`;
+  const filePath = path.join(uploadDir, filename);
+  await writeFile(filePath, bytes);
+  return {
+    type: "image",
+    name: filename,
+    mimeType,
+    size: bytes.length,
+    url: `/uploads/${filename}`,
+    filePath,
+    dataUrl: `data:${mimeType};base64,${bytes.toString("base64")}`,
+  };
+}
+
 export function publicAttachments(images) {
   return (Array.isArray(images) ? images : []).map(({ type, name, mimeType, size, url }) => ({
     type, name, mimeType, size, url,
   }));
+}
+
+export async function removePublicUpload(url, uploadDir) {
+  const filename = path.basename(String(url || ""));
+  if (!filename || url !== `/uploads/${filename}`) return false;
+  const root = `${path.resolve(uploadDir)}${path.sep}`;
+  const target = path.resolve(uploadDir, filename);
+  if (!target.startsWith(root)) return false;
+  try {
+    await unlink(target);
+    await removeDerivedThumbnails(uploadDir, filename);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function removeDerivedThumbnails(uploadDir, filename) {
+  const thumbnailDir = path.join(uploadDir, ".thumbs");
+  let entries;
+  try { entries = await readdir(thumbnailDir); }
+  catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  await Promise.all(entries
+    .filter((entry) => entry.startsWith(`${filename}.`))
+    .map((entry) => unlink(path.join(thumbnailDir, entry)).catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    })));
 }
 
 function matchesSignature(bytes, mimeType) {

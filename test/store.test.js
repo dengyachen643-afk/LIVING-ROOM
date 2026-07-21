@@ -8,20 +8,59 @@ import { RoundtableStore } from "../src/store.js";
 test("RoundtableStore persists messages and long-term memories", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "sota-roundtable-"));
   const filePath = path.join(directory, "state.json");
+  let store;
+  let reopened;
   try {
-    const store = new RoundtableStore({ filePath });
+    store = new RoundtableStore({ filePath });
     await store.addMessage({ id: "u1", role: "user", content: "hello" });
     const memory = await store.addMemory("Keep answers concise");
+    await store.setAvatar("gen", "/uploads/gen-avatar.png");
+    await store.setProfileSignature("okra", "在场，也在生活。 ");
+    await store.setProfileSignature("gen", "一二三四五六七八九十一二三四五六七");
+    await store.setChatBackground("gen", "/uploads/gen-background.jpg");
 
-    const reopened = new RoundtableStore({ filePath });
+    reopened = new RoundtableStore({ filePath });
     const snapshot = await reopened.getSnapshot();
     assert.equal(snapshot.messages[0].content, "hello");
     assert.equal(snapshot.memories[0].id, memory.id);
+    assert.equal(snapshot.avatars.gen, "/uploads/gen-avatar.png");
+    assert.equal(snapshot.signatures.okra, "在场，也在生活。");
+    assert.equal([...snapshot.signatures.gen].length, 15);
+    assert.equal(snapshot.chatBackgrounds.gen, "/uploads/gen-background.jpg");
     const persisted = await readFile(filePath, "utf8");
     assert.doesNotThrow(() => JSON.parse(persisted));
   } finally {
+    store?.close();
+    reopened?.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("chat display stays bounded while the SQLite archive keeps and searches every message", async () => {
+  const store = new RoundtableStore({ filePath: "", archiveFilePath: ":memory:" });
+  const messages = Array.from({ length: 420 }, (_, index) => ({
+    id: `archive-${String(index).padStart(3, "0")}`,
+    role: index % 2 ? "assistant" : "user",
+    author: index % 2 ? "Gen" : "Okra",
+    providerId: index % 2 ? "codex-cli" : "",
+    channel: index % 3 ? "group" : "gen",
+    content: index === 5 ? "一枚只出现一次的银色书签" : `长期记录 ${index}`,
+    createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+  }));
+  await store.importMessages(messages);
+  assert.equal((await store.getSnapshot()).messages.length, 400);
+
+  const search = await store.searchArchivedMessages({ query: "银色书签" });
+  assert.equal(search.length, 1);
+  assert.equal(search[0].id, "archive-005");
+  const genMessages = await store.searchArchivedMessages({ member: "gen", channel: "gen", limit: 10 });
+  assert.ok(genMessages.length > 0);
+  assert.ok(genMessages.every((message) => message.role === "assistant" && message.providerId === "codex-cli"));
+  const around = await store.getArchivedMessageContext("archive-005", 2);
+  assert.equal(around.some((message) => message.id === "archive-005"), true);
+  const older = await store.listArchivedMessages({ channel: "gen", limit: 100 });
+  assert.equal(older.entries.length, 100);
+  store.close();
 });
 
 test("RoundtableStore keeps image-only messages and tool activity", async () => {

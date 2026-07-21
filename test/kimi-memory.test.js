@@ -29,7 +29,7 @@ test("Kimi memory curator parses create and valid update actions", async () => {
   assert.equal(body.model, "kimi-k3");
   assert.equal(body.temperature, undefined);
   assert.equal(body.top_p, undefined);
-  assert.equal(body.max_completion_tokens, 1200);
+  assert.equal(body.max_completion_tokens, 600);
   assert.deepEqual(actions.map((action) => action.type), ["create", "update"]);
   assert.equal(actions[0].text, "用户喜欢爵士乐");
 });

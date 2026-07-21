@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#253a2d">
+    <title>朋友圈 · LIVING ROOM</title>
+    <link rel="stylesheet" href="/moments.css?v=20260721-6">
+    <link rel="stylesheet" href="/profile.css?v=20260721-4">
+    <link rel="stylesheet" href="/shell-nav.css?v=20260721-9">
+  </head>
+  <body>
+    <div class="moments-shell">
+      <header class="moments-cover">
+        <a class="back-button" href="/" aria-label="返回聊天">‹</a>
+        <button id="new-post-button" class="cover-publish-button" type="button" aria-label="发布朋友圈">
+          <span aria-hidden="true"></span>
+        </button>
+        <button id="change-cover-button" class="change-cover-button" type="button">更换封面</button>
+        <input id="cover-image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+        <div class="profile">
+          <strong>Okra</strong>
+          <span class="avatar avatar-okra" data-avatar-id="okra">O</span>
+        </div>
+      </header>
+
+      <main>
+        <div id="connection-note" class="connection-note" hidden></div>
+        <section id="feed" class="feed" aria-live="polite"></section>
+        <button id="load-more" class="load-more" type="button" hidden>再往前看看</button>
+        <div id="empty-state" class="empty-state" hidden>
+          <span>今天还很安静。</span>
+          <button type="button">发第一条</button>
+        </div>
+      </main>
+    </div>
+
+    <nav class="bottom-nav moments-bottom-nav" aria-label="功能分区">
+      <a class="bottom-nav-item" href="/"><span class="bottom-nav-icon bottom-nav-chat" aria-hidden="true"><i></i><i></i><b id="bottom-chat-unread" class="bottom-nav-badge" hidden></b></span><span>聊天</span></a>
+      <a class="bottom-nav-item active" href="/moments" aria-current="page"><span class="bottom-nav-icon bottom-nav-moments" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>朋友圈</span></a>
+    </nav>
+
+    <div id="post-dialog" class="dialog-layer" hidden>
+      <section class="compose-card" role="dialog" aria-modal="true" aria-labelledby="compose-title">
+        <header>
+          <button id="close-post" type="button">取消</button>
+          <strong id="compose-title">发朋友圈</strong>
+          <button id="publish-post" class="publish-button" type="button">发表</button>
+        </header>
+        <textarea id="post-content" maxlength="8000" rows="6" placeholder="这一刻在想什么……"></textarea>
+        <div id="post-previews" class="post-previews"></div>
+        <button id="add-images" class="add-images" type="button"><span>＋</span>图片（最多 4 张）</button>
+        <input id="post-images" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+        <p id="post-status" class="post-status" role="status"></p>
+      </section>
+    </div>
+
+    <div id="comment-dialog" class="dialog-layer comment-layer" hidden>
+      <form id="comment-form" class="comment-card">
+        <button id="close-comment" class="comment-close" type="button" aria-label="收起评论框">×</button>
+        <label class="comment-input-wrap">
+          <strong id="comment-title" class="visually-hidden">评论</strong>
+          <textarea id="comment-content" maxlength="4000" rows="1" enterkeyhint="send" placeholder="发表评论……"></textarea>
+        </label>
+        <button class="comment-send" type="submit">发送</button>
+        <p id="comment-status" class="post-status" role="status"></p>
+      </form>
+    </div>
+
+    <div id="lightbox" class="lightbox" hidden>
+      <button id="close-lightbox" type="button" aria-label="关闭大图">×</button>
+      <img id="lightbox-image" alt="朋友圈图片大图">
+    </div>
+
+    <div id="toast" class="toast" role="status" hidden></div>
+    <script type="module" src="/moments.js?v=20260722-17"></script>
+  </body>
+</html>
