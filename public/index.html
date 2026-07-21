@@ -3,9 +3,11 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#a6b39c">
+    <meta name="theme-color" content="#2f6b4a">
     <title>LIVING ROOM</title>
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=20260721-36">
+    <link rel="stylesheet" href="/profile.css?v=20260721-4">
+    <link rel="stylesheet" href="/shell-nav.css?v=20260721-9">
   </head>
   <body>
     <div id="app-shell" class="app-shell">
@@ -13,37 +15,44 @@
 
       <aside class="sidebar" aria-label="聊天设置">
         <header class="sidebar-header">
-          <div class="app-title">
-            <span class="app-mark" aria-hidden="true">聊</span>
-            <strong>LIVING ROOM</strong>
+          <span aria-hidden="true"></span>
+          <div class="app-title"><strong>聊天</strong></div>
+          <div class="sidebar-header-actions">
+            <button id="sidebar-close" class="icon-button sidebar-close" type="button" aria-label="关闭" hidden>×</button>
           </div>
-          <button id="sidebar-close" class="icon-button sidebar-close" type="button" aria-label="关闭侧栏">×</button>
         </header>
 
         <div class="conversation-list" aria-label="聊天列表">
           <button class="conversation-card active" type="button" data-chat="group">
-            <span class="conversation-avatar" aria-hidden="true"><i>G</i><i>Ki</i><i>K</i></span>
+            <span class="conversation-avatar-wrap"><span class="conversation-avatar" aria-hidden="true"><i data-avatar-id="okra">O</i><i data-avatar-id="gen">G</i><i data-avatar-id="kimi">Ki</i><i data-avatar-id="glm">S</i><i data-avatar-id="k">K</i></span><b class="conversation-unread" data-unread="group" hidden></b></span>
             <span class="conversation-copy">
               <span><strong>客厅</strong><time>现在</time></span>
-              <span>Gen、Kimi、K</span>
+              <span id="group-card-preview">Okra、Gen、Kimi、Shin、K</span>
             </span>
           </button>
           <button class="conversation-card" type="button" data-chat="gen">
-            <span class="contact-avatar gen-avatar" aria-hidden="true">G</span>
+            <span class="conversation-avatar-wrap"><span class="contact-avatar gen-avatar" data-avatar-id="gen" aria-hidden="true">G</span><b class="conversation-unread" data-unread="gen" hidden></b></span>
             <span class="conversation-copy">
               <span><strong>Gen</strong><time></time></span>
               <span id="gen-card-preview">私聊</span>
             </span>
           </button>
           <button class="conversation-card" type="button" data-chat="kimi">
-            <span class="contact-avatar kimi-avatar" aria-hidden="true">Ki</span>
+            <span class="conversation-avatar-wrap"><span class="contact-avatar kimi-avatar" data-avatar-id="kimi" aria-hidden="true">Ki</span><b class="conversation-unread" data-unread="kimi" hidden></b></span>
             <span class="conversation-copy">
               <span><strong>Kimi</strong><time></time></span>
               <span id="kimi-card-preview">私聊</span>
             </span>
           </button>
+          <button class="conversation-card" type="button" data-chat="glm">
+            <span class="conversation-avatar-wrap"><span class="contact-avatar glm-avatar" data-avatar-id="glm" aria-hidden="true">S</span><b class="conversation-unread" data-unread="glm" hidden></b></span>
+            <span class="conversation-copy">
+              <span><strong>Shin</strong><time></time></span>
+              <span id="glm-card-preview">私聊</span>
+            </span>
+          </button>
           <button class="conversation-card disabled" type="button" disabled>
-            <span class="contact-avatar k-avatar" aria-hidden="true">K</span>
+            <span class="contact-avatar k-avatar" data-avatar-id="k" aria-hidden="true">K</span>
             <span class="conversation-copy">
               <span><strong>K</strong><time></time></span>
               <span>还没回来</span>
@@ -51,15 +60,125 @@
           </button>
         </div>
 
-        <section class="side-section members-section">
+        <section class="side-section members-section" hidden>
           <div class="section-title"><span>成员</span><span id="participant-count">0</span></div>
           <div id="provider-list" class="provider-list" aria-live="polite"></div>
         </section>
 
-        <footer class="sidebar-footer">
-          <span id="turn-budget">最多 8 句</span>
+        <footer class="sidebar-footer" hidden>
+          <span id="turn-budget">每人最多 5 轮</span>
           <button id="clear-button" class="text-button" type="button">清空聊天</button>
         </footer>
+        <nav class="bottom-nav" aria-label="功能分区">
+          <a class="bottom-nav-item active" href="/" aria-current="page"><span class="bottom-nav-icon bottom-nav-chat" aria-hidden="true"><i></i><i></i></span><span>聊天</span></a>
+          <a class="bottom-nav-item" href="/moments"><span class="bottom-nav-icon bottom-nav-moments" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>朋友圈</span></a>
+        </nav>
+      </aside>
+
+      <button id="history-search-overlay" class="memory-overlay history-search-overlay" type="button" aria-label="关闭聊天记录搜索" hidden></button>
+      <aside id="history-search-panel" class="memory-panel history-search-panel" aria-label="搜索聊天记录" hidden>
+        <header class="history-search-header">
+          <span aria-hidden="true"></span>
+          <div><strong>搜索聊天记录</strong><span id="history-search-channel"></span><span id="history-search-count"></span></div>
+          <button id="history-search-close" class="icon-button" type="button" aria-label="关闭搜索">×</button>
+        </header>
+        <form id="history-search-form" class="history-search-form">
+          <input id="history-search-input" maxlength="200" autocomplete="off" placeholder="搜索当前聊天里的内容">
+          <button type="submit">搜索</button>
+        </form>
+        <section class="history-member-filter" aria-labelledby="history-member-filter-title">
+          <strong id="history-member-filter-title">按成员查找</strong>
+          <div id="history-search-members" class="history-search-members"></div>
+        </section>
+        <div id="history-search-results" class="history-search-results"></div>
+      </aside>
+
+      <button id="avatar-overlay" class="memory-overlay" type="button" aria-label="关闭头像设置" hidden></button>
+      <aside id="avatar-panel" class="memory-panel avatar-panel" aria-label="成员头像" hidden>
+        <header class="memory-panel-header">
+          <div><strong>成员头像</strong><span>手机和电脑共用</span></div>
+          <button id="avatar-close" class="icon-button" type="button" aria-label="关闭头像设置">×</button>
+        </header>
+        <input id="avatar-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+        <div class="avatar-editor-list">
+          <div class="avatar-editor-row" data-avatar-row="okra"><span class="avatar-editor-preview" data-avatar-id="okra">O</span><strong>Okra</strong><button type="button" data-avatar-upload="okra">从相册选择</button><button class="avatar-reset" type="button" data-avatar-reset="okra">恢复默认</button></div>
+          <div class="avatar-editor-row" data-avatar-row="gen"><span class="avatar-editor-preview" data-avatar-id="gen">G</span><strong>Gen</strong><button type="button" data-avatar-upload="gen">从相册选择</button><button class="avatar-reset" type="button" data-avatar-reset="gen">恢复默认</button></div>
+          <div class="avatar-editor-row" data-avatar-row="kimi"><span class="avatar-editor-preview" data-avatar-id="kimi">Ki</span><strong>Kimi</strong><button type="button" data-avatar-upload="kimi">从相册选择</button><button class="avatar-reset" type="button" data-avatar-reset="kimi">恢复默认</button></div>
+          <div class="avatar-editor-row" data-avatar-row="glm"><span class="avatar-editor-preview glm-avatar" data-avatar-id="glm">S</span><strong>Shin</strong><button type="button" data-avatar-upload="glm">从相册选择</button><button class="avatar-reset" type="button" data-avatar-reset="glm">恢复默认</button></div>
+          <div class="avatar-editor-row" data-avatar-row="k"><span class="avatar-editor-preview" data-avatar-id="k">K</span><strong>K</strong><button type="button" data-avatar-upload="k">从相册选择</button><button class="avatar-reset" type="button" data-avatar-reset="k">恢复默认</button></div>
+        </div>
+        <p id="avatar-status" class="avatar-status" role="status" aria-live="polite"></p>
+      </aside>
+
+      <div id="avatar-crop-dialog" class="avatar-crop-dialog" role="dialog" aria-modal="true" aria-labelledby="avatar-crop-title" hidden>
+        <section class="avatar-crop-card">
+          <header class="avatar-crop-header">
+            <div><strong id="avatar-crop-title">裁剪头像</strong><span>拖动图片调整位置</span></div>
+            <button id="avatar-crop-close" class="icon-button" type="button" aria-label="取消裁剪">×</button>
+          </header>
+          <div class="avatar-crop-stage">
+            <canvas id="avatar-crop-canvas" width="640" height="640" aria-label="头像裁剪区域"></canvas>
+            <span class="avatar-crop-guide" aria-hidden="true"></span>
+          </div>
+          <label class="avatar-crop-zoom" for="avatar-crop-zoom"><span>缩放</span><input id="avatar-crop-zoom" type="range" min="0.05" max="4" step="0.01" value="1"></label>
+          <footer class="avatar-crop-actions">
+            <button id="avatar-crop-cancel" class="avatar-crop-cancel" type="button">取消</button>
+            <button id="avatar-crop-confirm" class="avatar-crop-confirm" type="button">使用这个头像</button>
+          </footer>
+        </section>
+      </div>
+
+      <button id="chat-info-overlay" class="memory-overlay chat-info-overlay" type="button" aria-label="关闭聊天信息" hidden></button>
+      <aside id="chat-info-panel" class="chat-info-panel" aria-label="聊天信息" hidden>
+        <header class="chat-info-header">
+          <button id="chat-info-close" class="icon-button" type="button" aria-label="返回聊天">‹</button>
+          <strong id="chat-info-title">聊天信息</strong>
+          <span aria-hidden="true"></span>
+        </header>
+        <div class="chat-info-scroll">
+          <section id="chat-info-members-section" class="chat-info-members-section" aria-labelledby="chat-info-members-label">
+            <div class="chat-info-section-title"><strong id="chat-info-members-label">成员</strong><span id="chat-info-member-count"></span></div>
+            <div id="chat-info-members" class="chat-info-members"></div>
+          </section>
+
+          <section id="chat-info-name-section" class="chat-info-group">
+            <div class="chat-info-row static-row">
+              <span id="chat-info-name-label">群聊名称</span>
+              <strong id="chat-info-name">客厅</strong>
+            </div>
+          </section>
+
+          <section class="chat-info-group">
+            <button id="chat-info-memory" class="chat-info-row" type="button">
+              <span>记忆</span><span><small id="chat-info-memory-count">0 条</small><i>›</i></span>
+            </button>
+            <button id="chat-info-search" class="chat-info-row" type="button">
+              <span>查找聊天内容</span><span><i>›</i></span>
+            </button>
+          </section>
+
+          <section class="chat-info-group">
+            <button id="chat-info-background" class="chat-info-row background-row" type="button">
+              <span>设置当前聊天背景</span>
+              <span><span id="chat-info-background-preview" class="chat-background-preview"></span><i>›</i></span>
+            </button>
+            <button id="chat-info-background-reset" class="chat-info-row reset-row" type="button" hidden>
+              <span>恢复默认聊天背景</span><span><i>›</i></span>
+            </button>
+            <input id="chat-background-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+          </section>
+
+          <section class="chat-info-group">
+            <label id="relay-control" class="chat-info-row switch-row" for="relay-toggle">
+              <span>自由接话</span>
+              <input id="relay-toggle" type="checkbox" checked>
+            </label>
+            <button id="kimi-settings-button" class="chat-info-row" type="button" hidden>
+              <span>模型连接</span><span><i>›</i></span>
+            </button>
+          </section>
+          <p id="chat-background-status" class="chat-background-status" role="status"></p>
+        </div>
       </aside>
 
       <button id="memory-overlay" class="memory-overlay" type="button" aria-label="关闭记忆" hidden></button>
@@ -77,32 +196,37 @@
 
       <main class="main-panel">
         <header class="topbar">
-          <button id="sidebar-toggle" class="icon-button menu-button" type="button" aria-label="打开侧栏">☰</button>
+          <button id="sidebar-toggle" class="icon-button menu-button" type="button" aria-label="返回聊天列表">‹</button>
           <div class="channel-title">
-            <div id="group-avatar" class="group-avatar" aria-hidden="true"><i>G</i><i>Ki</i><i>K</i></div>
+            <div id="group-avatar" class="group-avatar" aria-hidden="true"><i data-avatar-id="okra">O</i><i data-avatar-id="gen">G</i><i data-avatar-id="kimi">Ki</i><i data-avatar-id="glm">S</i><i data-avatar-id="k">K</i></div>
             <div id="private-avatar" class="contact-avatar" aria-hidden="true" hidden></div>
             <div>
               <h1 id="channel-name">客厅</h1>
               <p id="channel-subtitle">Gen、Kimi、K</p>
             </div>
           </div>
-          <button id="kimi-memory-button" class="topbar-action" type="button" hidden>记忆</button>
-          <button id="kimi-settings-button" class="topbar-action" type="button" hidden>API</button>
-          <label id="relay-control" class="relay-toggle" for="relay-toggle" title="允许成员互相接话">
-            <input id="relay-toggle" type="checkbox" checked>
-            <span>自由接话</span>
-          </label>
+          <button id="chat-info-button" class="chat-info-button" type="button" aria-label="聊天信息">•••</button>
         </header>
 
         <section id="chat" class="chat" aria-live="polite" aria-label="群聊">
+          <button id="load-earlier-messages" class="load-earlier-messages" type="button">查看更早记录</button>
           <form id="kimi-setup" class="kimi-setup" hidden>
-            <div class="contact-avatar kimi-avatar" aria-hidden="true">K</div>
+            <div class="contact-avatar kimi-avatar" data-avatar-id="kimi" aria-hidden="true">Ki</div>
             <strong>连接 Kimi</strong>
             <div class="key-row">
               <input id="kimi-api-key" type="password" autocomplete="new-password" placeholder="Kimi API Key" aria-label="Kimi API Key">
               <button type="submit">连接</button>
             </div>
             <small>输入一次，保存在这台电脑，手机和电脑共用</small>
+          </form>
+          <form id="glm-setup" class="kimi-setup" hidden>
+            <div class="contact-avatar glm-avatar" data-avatar-id="glm" aria-hidden="true">S</div>
+            <strong>连接 Shin</strong>
+            <div class="key-row">
+              <input id="glm-api-key" type="password" autocomplete="new-password" placeholder="智谱 API Key" aria-label="GLM API Key">
+              <button type="submit">连接</button>
+            </div>
+            <small>输入一次，保存在这台电脑；手机和电脑共用</small>
           </form>
           <div id="empty-state" class="empty-state">
             <div id="empty-avatar" class="empty-avatar" aria-hidden="true">客</div>
@@ -114,18 +238,27 @@
         </section>
 
         <footer id="composer-wrap" class="composer-wrap">
+          <div id="gen-workbar" class="gen-workbar" hidden>
+            <div class="gen-mode-switch" role="group" aria-label="Gen 模式">
+              <button type="button" data-gen-mode="chat" aria-pressed="true">聊天</button>
+              <button type="button" data-gen-mode="work" aria-pressed="false">干活</button>
+            </div>
+            <label id="gen-workspace-wrap" class="gen-workspace-wrap" hidden>
+              <span>工作区</span>
+              <select id="gen-workspace" aria-label="Gen 工作区"></select>
+            </label>
+          </div>
           <div id="run-status" class="run-status" hidden></div>
           <div id="mention-bar" class="mention-bar" aria-label="快速点名"></div>
-          <div id="image-preview" class="image-preview" aria-label="待发送图片" hidden></div>
-          <div id="emoji-panel" class="emoji-panel" aria-label="Emoji" hidden>
-            <button type="button">😊</button><button type="button">😂</button><button type="button">🥹</button><button type="button">❤️</button>
-            <button type="button">👀</button><button type="button">🤔</button><button type="button">👍</button><button type="button">🫂</button>
+          <div id="quote-preview" class="quote-preview" hidden>
+            <div><strong id="quote-preview-author"></strong><span id="quote-preview-text"></span></div>
+            <button id="quote-preview-close" type="button" aria-label="取消引用">×</button>
           </div>
+          <div id="image-preview" class="image-preview" aria-label="待发送图片" hidden></div>
           <form id="composer" class="composer">
             <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
             <button id="attach-button" class="attach-button" type="button" aria-label="上传图片">＋</button>
-            <button id="emoji-button" class="emoji-button" type="button" aria-label="选择 Emoji">☺</button>
-            <textarea id="message-input" rows="1" maxlength="8000" placeholder="消息" aria-label="消息"></textarea>
+            <textarea id="message-input" rows="1" maxlength="8000" placeholder="" aria-label="消息"></textarea>
             <div class="action-buttons">
               <button id="stop-button" class="stop-button" type="button" hidden aria-label="停止接话">■</button>
               <button id="send-button" class="send-button" type="submit" aria-label="发送">➤</button>
@@ -133,7 +266,25 @@
           </form>
         </footer>
       </main>
+
+      <div id="image-lightbox" class="image-lightbox" role="dialog" aria-modal="true" aria-label="图片预览" hidden>
+        <button id="image-lightbox-close" class="image-lightbox-close" type="button" aria-label="关闭图片预览">×</button>
+        <img id="image-lightbox-image" alt="">
+      </div>
+
+      <button id="message-action-overlay" class="message-action-overlay" type="button" aria-label="关闭消息操作" hidden></button>
+      <aside id="message-action-menu" class="message-action-menu" aria-label="消息操作" role="menu" hidden>
+        <button id="message-action-copy" type="button" role="menuitem">
+          <span class="message-action-icon message-action-copy-icon" aria-hidden="true"></span><span class="message-action-label">复制</span>
+        </button>
+        <button id="message-action-quote" type="button" role="menuitem">
+          <span class="message-action-icon message-action-quote-icon" aria-hidden="true">“</span><span class="message-action-label">引用</span>
+        </button>
+        <button id="message-action-delete" type="button" role="menuitem">
+          <span class="message-action-icon message-action-delete-icon" aria-hidden="true"></span><span class="message-action-label">删除</span>
+        </button>
+      </aside>
     </div>
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/app.js?v=20260721-45"></script>
   </body>
 </html>

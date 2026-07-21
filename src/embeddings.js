@@ -19,6 +19,23 @@ export class LocalEmbeddingService {
     return Array.from(output.data || [], (value) => Number(Number(value).toFixed(6)));
   }
 
+  async embedMany(texts, { batchSize = 32 } = {}) {
+    const inputs = (Array.isArray(texts) ? texts : []).map((text) => clean(text).slice(0, 2_000));
+    if (!inputs.length) return [];
+    const extractor = await this.getExtractor();
+    const vectors = [];
+    const size = Math.max(1, Math.min(64, Number.parseInt(batchSize, 10) || 32));
+    for (let index = 0; index < inputs.length; index += size) {
+      const batch = inputs.slice(index, index + size);
+      const output = await extractor(batch, { pooling: "mean", normalize: true });
+      const rows = output.tolist();
+      for (const row of rows) {
+        vectors.push(Array.from(row || [], (value) => Number(Number(value).toFixed(6))));
+      }
+    }
+    return vectors;
+  }
+
   async getExtractor() {
     if (!this.extractorPromise) {
       env.cacheDir = this.cacheDir;

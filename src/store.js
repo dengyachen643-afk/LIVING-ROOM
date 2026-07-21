@@ -1,13 +1,20 @@
 import path from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { cosineSimilarity } from "./embeddings.js";
+import { stripInternalTimeMetadata } from "./prompt-time.js";
+import { MessageArchive } from "./message-archive.js";
+import { normalizeQuote } from "./quote-context.js";
 
 const MAX_MESSAGES = 400;
 const MAX_MEMORIES = 1_000;
 
 export class RoundtableStore {
-  constructor({ filePath = "" } = {}) {
+  constructor({ filePath = "", archiveFilePath } = {}) {
     this.filePath = filePath ? path.resolve(filePath) : "";
+    const resolvedArchive = archiveFilePath === ":memory:" ? ":memory:"
+      : archiveFilePath ? path.resolve(archiveFilePath)
+        : this.filePath ? path.join(path.dirname(this.filePath), "chat-history.sqlite") : ":memory:";
+    this.archive = new MessageArchive({ filePath: resolvedArchive });
     this.state = emptyState();
     this.loaded = false;
     this.loadPromise = null;
@@ -20,22 +27,24 @@ export class RoundtableStore {
   }
 
   async addMessage(message) {
-    return this.mutate((state) => {
-      const normalized = normalizeMessage(message);
-      if (!normalized) return null;
+    const normalized = normalizeMessage(message);
+    if (!normalized) return null;
+    const result = await this.mutate((state) => {
       if (!state.messages.some((item) => item.id === normalized.id)) state.messages.push(normalized);
       state.messages = state.messages.slice(-MAX_MESSAGES);
       state.updatedAt = new Date().toISOString();
       return normalized;
     });
+    this.archive.upsert(result);
+    return result;
   }
 
   async importMessages(messages) {
-    return this.mutate((state) => {
+    const normalizedMessages = (Array.isArray(messages) ? messages : []).map(normalizeMessage).filter(Boolean);
+    const result = await this.mutate((state) => {
       const knownIds = new Set(state.messages.map((item) => item.id));
-      for (const candidate of Array.isArray(messages) ? messages : []) {
-        const message = normalizeMessage(candidate);
-        if (message && !knownIds.has(message.id)) {
+      for (const message of normalizedMessages) {
+        if (!knownIds.has(message.id)) {
           knownIds.add(message.id);
           state.messages.push(message);
         }
@@ -44,16 +53,97 @@ export class RoundtableStore {
       state.updatedAt = new Date().toISOString();
       return clone(state.messages);
     });
+    this.archive.import(normalizedMessages);
+    return result;
   }
 
   async clearMessages(channel = "") {
-    return this.mutate((state) => {
+    const result = await this.mutate((state) => {
       const normalizedChannel = clean(channel).slice(0, 40);
       state.messages = normalizedChannel
         ? state.messages.filter((message) => message.channel !== normalizedChannel)
         : [];
       state.updatedAt = new Date().toISOString();
       return [];
+    });
+    this.archive.clear(channel);
+    return result;
+  }
+
+  async listArchivedMessages(options = {}) {
+    await this.ensureLoaded();
+    return clone(this.archive.list(options));
+  }
+
+  async searchArchivedMessages(options = {}) {
+    await this.ensureLoaded();
+    return clone(this.archive.search(options));
+  }
+
+  async getArchivedMessageContext(id, radius = 24) {
+    await this.ensureLoaded();
+    return clone(this.archive.around(id, radius));
+  }
+
+  close() {
+    this.archive.close();
+  }
+
+  async setAvatar(id, url) {
+    const avatarId = normalizeAvatarId(id);
+    const avatarUrl = normalizeAvatarUrl(url);
+    if (!avatarId || !avatarUrl) throw new Error("头像资料不正确");
+    return this.mutate((state) => {
+      const previous = state.avatars[avatarId] || "";
+      state.avatars[avatarId] = avatarUrl;
+      state.updatedAt = new Date().toISOString();
+      return { id: avatarId, url: avatarUrl, previous };
+    });
+  }
+
+  async deleteAvatar(id) {
+    const avatarId = normalizeAvatarId(id);
+    if (!avatarId) return null;
+    return this.mutate((state) => {
+      const previous = state.avatars[avatarId] || "";
+      delete state.avatars[avatarId];
+      state.updatedAt = new Date().toISOString();
+      return previous ? { id: avatarId, previous } : null;
+    });
+  }
+
+  async setProfileSignature(id, signature) {
+    const profileId = normalizeAvatarId(id);
+    if (!profileId) throw new Error("成员资料不正确");
+    const normalizedSignature = normalizeProfileSignature(signature);
+    return this.mutate((state) => {
+      if (normalizedSignature) state.signatures[profileId] = normalizedSignature;
+      else delete state.signatures[profileId];
+      state.updatedAt = new Date().toISOString();
+      return { id: profileId, signature: normalizedSignature };
+    });
+  }
+
+  async setChatBackground(channel, url) {
+    const chatChannel = normalizeChatChannel(channel);
+    const backgroundUrl = normalizeAvatarUrl(url);
+    if (!chatChannel || !backgroundUrl) throw new Error("聊天背景资料不正确");
+    return this.mutate((state) => {
+      const previous = state.chatBackgrounds[chatChannel] || "";
+      state.chatBackgrounds[chatChannel] = backgroundUrl;
+      state.updatedAt = new Date().toISOString();
+      return { channel: chatChannel, url: backgroundUrl, previous };
+    });
+  }
+
+  async deleteChatBackground(channel) {
+    const chatChannel = normalizeChatChannel(channel);
+    if (!chatChannel) return null;
+    return this.mutate((state) => {
+      const previous = state.chatBackgrounds[chatChannel] || "";
+      delete state.chatBackgrounds[chatChannel];
+      state.updatedAt = new Date().toISOString();
+      return previous ? { channel: chatChannel, previous } : null;
     });
   }
 
@@ -184,6 +274,8 @@ export class RoundtableStore {
     } catch (error) {
       if (error?.code !== "ENOENT") throw new Error(`无法读取圆桌记忆文件：${error.message}`);
     }
+    this.archive.initialize();
+    this.archive.import(this.state.messages);
     this.loaded = true;
   }
 
@@ -206,20 +298,72 @@ export class RoundtableStore {
 }
 
 function emptyState() {
-  return { version: 3, messages: [], memories: [], updatedAt: "" };
+  return { version: 6, messages: [], memories: [], avatars: {}, signatures: {}, chatBackgrounds: {}, updatedAt: "" };
 }
 
 function normalizeState(value) {
   return {
-    version: 3,
+    version: 6,
     messages: (Array.isArray(value?.messages) ? value.messages : []).map(normalizeMessage).filter(Boolean).slice(-MAX_MESSAGES),
     memories: (Array.isArray(value?.memories) ? value.memories : []).map(normalizeMemory).filter(Boolean).slice(-MAX_MEMORIES),
+    avatars: normalizeAvatars(value?.avatars),
+    signatures: normalizeSignatures(value?.signatures),
+    chatBackgrounds: normalizeChatBackgrounds(value?.chatBackgrounds),
     updatedAt: clean(value?.updatedAt),
   };
 }
 
+function normalizeSignatures(value) {
+  const signatures = {};
+  for (const id of ["okra", "gen", "kimi", "glm", "k"]) {
+    const signature = normalizeProfileSignature(value?.[id]);
+    if (signature) signatures[id] = signature;
+  }
+  return signatures;
+}
+
+function normalizeProfileSignature(value) {
+  return [...clean(value).replace(/\s+/gu, " ")].slice(0, 15).join("");
+}
+
+function normalizeAvatars(value) {
+  const avatars = {};
+  for (const id of ["okra", "gen", "kimi", "glm", "k"]) {
+    const url = normalizeAvatarUrl(value?.[id]);
+    if (url) avatars[id] = url;
+  }
+  return avatars;
+}
+
+function normalizeAvatarId(value) {
+  const id = clean(value).toLowerCase();
+  return ["okra", "gen", "kimi", "glm", "k"].includes(id) ? id : "";
+}
+
+function normalizeChatBackgrounds(value) {
+  const backgrounds = {};
+  for (const channel of ["group", "gen", "kimi", "glm"]) {
+    const url = normalizeAvatarUrl(value?.[channel]);
+    if (url) backgrounds[channel] = url;
+  }
+  return backgrounds;
+}
+
+function normalizeChatChannel(value) {
+  const channel = clean(value).toLowerCase();
+  return ["group", "gen", "kimi", "glm"].includes(channel) ? channel : "";
+}
+
+function normalizeAvatarUrl(value) {
+  const url = clean(value).slice(0, 500);
+  return /^\/uploads\/[A-Za-z0-9-]+\.(?:png|jpe?g|webp|gif)$/u.test(url) ? url : "";
+}
+
 function normalizeMessage(value) {
-  const content = clean(value?.content).slice(0, 12_000);
+  const rawContent = clean(value?.content);
+  const content = clean(value?.role === "assistant" && clean(value?.providerId) === "kimi"
+    ? stripInternalTimeMetadata(rawContent)
+    : rawContent).slice(0, 12_000);
   const attachments = normalizeAttachments(value?.attachments);
   if (!content && !attachments.length) return null;
   return {
@@ -231,11 +375,16 @@ function normalizeMessage(value) {
     model: clean(value?.model),
     content,
     attachments,
+    mode: ["work", "guide"].includes(value?.mode) ? value.mode : "chat",
+    workspaceId: clean(value?.workspaceId).slice(0, 80),
+    workspaceLabel: clean(value?.workspaceLabel).slice(0, 120),
+    proactive: value?.proactive === true,
     toolCalls: normalizeToolCalls(value?.toolCalls),
     reasoning: clean(value?.reasoning).slice(0, 60_000),
     readAt: clean(value?.readAt),
     replyToId: clean(value?.replyToId),
     triggeredBy: clean(value?.triggeredBy).slice(0, 80),
+    quote: normalizeQuote(value?.quote),
     mentions: [...new Set((Array.isArray(value?.mentions) ? value.mentions : []).map(clean).filter(Boolean))].slice(0, 10),
     createdAt: clean(value?.createdAt) || new Date().toISOString(),
   };
