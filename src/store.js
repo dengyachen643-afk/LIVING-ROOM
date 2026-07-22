@@ -7,6 +7,10 @@ import { normalizeQuote } from "./quote-context.js";
 
 const MAX_MESSAGES = 400;
 const MAX_MEMORIES = 1_000;
+const MAX_SHORT_TERM_MEMORIES = 800;
+const MAX_EVENT_MEMORIES = 500;
+const MAX_MEMBER_ROUNDS = 160;
+const MEMBER_MEMORY_IDS = ["g", "kimi", "glm", "k"];
 
 export class RoundtableStore {
   constructor({ filePath = "", archiveFilePath } = {}) {
@@ -257,6 +261,136 @@ export class RoundtableStore {
     });
   }
 
+  async listShortTermMemories({ query = "", namespace = "", limit = 50, queryVector = [], now = new Date().toISOString() } = {}) {
+    await this.ensureLoaded();
+    const current = Date.parse(clean(now)) || Date.now();
+    return clone(rankContextMemories(
+      this.state.shortTermMemories.filter((memory) => (
+        (!namespace || memory.namespace === normalizeNamespace(namespace, ""))
+        && Date.parse(memory.expiresAt) > current
+      )),
+      { query, queryVector, limit },
+    ));
+  }
+
+  async addShortTermMemory(input = {}) {
+    const candidate = normalizeShortTermMemory(input);
+    if (!candidate) throw new Error("短期记忆内容不能为空");
+    return this.mutate((state) => {
+      const now = new Date().toISOString();
+      state.shortTermMemories = state.shortTermMemories.filter((memory) => Date.parse(memory.expiresAt) > Date.now());
+      const existing = state.shortTermMemories.find((memory) => (
+        memory.namespace === candidate.namespace
+        && (memory.fingerprint === candidate.fingerprint || memory.text.toLowerCase() === candidate.text.toLowerCase())
+      ));
+      if (existing) {
+        existing.text = chooseRicherText(existing.text, candidate.text);
+        existing.tier = strongerShortTier(existing.tier, candidate.tier);
+        existing.importance = Math.max(existing.importance, candidate.importance);
+        existing.expiresAt = laterIso(existing.expiresAt, candidate.expiresAt);
+        existing.sourceRoundIds = uniqueStrings([...existing.sourceRoundIds, ...candidate.sourceRoundIds], 40);
+        existing.embedding = candidate.embedding.length ? candidate.embedding : existing.embedding;
+        existing.embeddingModel = candidate.embedding.length ? candidate.embeddingModel : existing.embeddingModel;
+        existing.updatedAt = now;
+        state.updatedAt = now;
+        return clone(existing);
+      }
+      state.shortTermMemories.push(candidate);
+      state.shortTermMemories = state.shortTermMemories.slice(-MAX_SHORT_TERM_MEMORIES);
+      state.updatedAt = now;
+      return clone(candidate);
+    });
+  }
+
+  async deleteShortTermMemory(id) {
+    const normalizedId = clean(id);
+    return this.mutate((state) => {
+      const before = state.shortTermMemories.length;
+      state.shortTermMemories = state.shortTermMemories.filter((item) => item.id !== normalizedId);
+      state.updatedAt = new Date().toISOString();
+      return state.shortTermMemories.length !== before;
+    });
+  }
+
+  async listEventMemories({ query = "", namespace = "", limit = 50, queryVector = [] } = {}) {
+    await this.ensureLoaded();
+    return clone(rankContextMemories(
+      this.state.eventMemories.filter((memory) => !namespace || memory.namespace === normalizeNamespace(namespace, "")),
+      { query, queryVector, limit },
+    ));
+  }
+
+  async addEventMemory(input = {}) {
+    const candidate = normalizeEventMemory(input);
+    if (!candidate) throw new Error("事件记忆内容不能为空");
+    return this.mutate((state) => {
+      const now = new Date().toISOString();
+      const existing = state.eventMemories.find((memory) => (
+        memory.namespace === candidate.namespace
+        && (memory.fingerprint === candidate.fingerprint || memory.text.toLowerCase() === candidate.text.toLowerCase())
+      ));
+      if (existing) {
+        existing.text = chooseRicherText(existing.text, candidate.text);
+        existing.participants = uniqueStrings([...existing.participants, ...candidate.participants], 10);
+        existing.confirmedBy = uniqueStrings([...existing.confirmedBy, ...candidate.confirmedBy], 10);
+        existing.sourceRoundIds = uniqueStrings([...existing.sourceRoundIds, ...candidate.sourceRoundIds], 40);
+        existing.importance = Math.max(existing.importance, candidate.importance);
+        existing.embedding = candidate.embedding.length ? candidate.embedding : existing.embedding;
+        existing.embeddingModel = candidate.embedding.length ? candidate.embeddingModel : existing.embeddingModel;
+        existing.updatedAt = now;
+        state.updatedAt = now;
+        return clone(existing);
+      }
+      state.eventMemories.push(candidate);
+      state.eventMemories = state.eventMemories.slice(-MAX_EVENT_MEMORIES);
+      state.updatedAt = now;
+      return clone(candidate);
+    });
+  }
+
+  async addMemberRound(memberId, input = {}) {
+    const member = normalizeMemberMemoryId(memberId);
+    const candidate = normalizeMemberRound({ ...input, memberId: member });
+    if (!member || !candidate) return null;
+    return this.mutate((state) => {
+      const rounds = state.memberRounds[member] || [];
+      const existing = rounds.find((round) => round.key === candidate.key);
+      if (existing) return clone(existing);
+      const nextSequence = Math.max(0, ...rounds.map((round) => round.sequence || 0)) + 1;
+      const round = { ...candidate, sequence: nextSequence };
+      state.memberRounds[member] = [...rounds, round].slice(-MAX_MEMBER_ROUNDS);
+      state.updatedAt = new Date().toISOString();
+      return clone(round);
+    });
+  }
+
+  async listMemberRounds(memberId, { limit = 30 } = {}) {
+    await this.ensureLoaded();
+    const member = normalizeMemberMemoryId(memberId);
+    const capped = positiveInt(limit, 30, 1, MAX_MEMBER_ROUNDS);
+    return clone((this.state.memberRounds[member] || []).slice(-capped));
+  }
+
+  async getPendingMemberReview(memberId, batchSize = 30) {
+    await this.ensureLoaded();
+    const member = normalizeMemberMemoryId(memberId);
+    const cursor = Number(this.state.memoryReviewCursors[member]) || 0;
+    const pending = (this.state.memberRounds[member] || []).filter((round) => round.sequence > cursor);
+    const size = positiveInt(batchSize, 30, 2, 60);
+    return pending.length >= size ? clone(pending.slice(0, size)) : [];
+  }
+
+  async completeMemberReview(memberId, endSequence) {
+    const member = normalizeMemberMemoryId(memberId);
+    const sequence = positiveInt(endSequence, 0, 0, Number.MAX_SAFE_INTEGER);
+    if (!member || !sequence) return false;
+    return this.mutate((state) => {
+      state.memoryReviewCursors[member] = Math.max(Number(state.memoryReviewCursors[member]) || 0, sequence);
+      state.updatedAt = new Date().toISOString();
+      return true;
+    });
+  }
+
   async ensureLoaded() {
     if (this.loaded) return;
     if (!this.loadPromise) this.loadPromise = this.load();
@@ -298,19 +432,57 @@ export class RoundtableStore {
 }
 
 function emptyState() {
-  return { version: 6, messages: [], memories: [], avatars: {}, signatures: {}, chatBackgrounds: {}, updatedAt: "" };
+  return {
+    version: 7,
+    messages: [],
+    memories: [],
+    shortTermMemories: [],
+    eventMemories: [],
+    memberRounds: emptyMemberRounds(),
+    memoryReviewCursors: {},
+    avatars: {},
+    signatures: {},
+    chatBackgrounds: {},
+    updatedAt: "",
+  };
 }
 
 function normalizeState(value) {
   return {
-    version: 6,
+    version: 7,
     messages: (Array.isArray(value?.messages) ? value.messages : []).map(normalizeMessage).filter(Boolean).slice(-MAX_MESSAGES),
     memories: (Array.isArray(value?.memories) ? value.memories : []).map(normalizeMemory).filter(Boolean).slice(-MAX_MEMORIES),
+    shortTermMemories: (Array.isArray(value?.shortTermMemories) ? value.shortTermMemories : [])
+      .map(normalizeShortTermMemory).filter(Boolean).filter((memory) => Date.parse(memory.expiresAt) > Date.now()).slice(-MAX_SHORT_TERM_MEMORIES),
+    eventMemories: (Array.isArray(value?.eventMemories) ? value.eventMemories : [])
+      .map(normalizeEventMemory).filter(Boolean).slice(-MAX_EVENT_MEMORIES),
+    memberRounds: normalizeMemberRounds(value?.memberRounds),
+    memoryReviewCursors: normalizeMemoryReviewCursors(value?.memoryReviewCursors),
     avatars: normalizeAvatars(value?.avatars),
     signatures: normalizeSignatures(value?.signatures),
     chatBackgrounds: normalizeChatBackgrounds(value?.chatBackgrounds),
     updatedAt: clean(value?.updatedAt),
   };
+}
+
+function emptyMemberRounds() {
+  return Object.fromEntries(MEMBER_MEMORY_IDS.map((id) => [id, []]));
+}
+
+function normalizeMemberRounds(value) {
+  const output = emptyMemberRounds();
+  for (const member of MEMBER_MEMORY_IDS) {
+    output[member] = (Array.isArray(value?.[member]) ? value[member] : [])
+      .map((round) => normalizeMemberRound({ ...round, memberId: member }))
+      .filter(Boolean)
+      .sort((left, right) => left.sequence - right.sequence || left.createdAt.localeCompare(right.createdAt))
+      .slice(-MAX_MEMBER_ROUNDS);
+  }
+  return output;
+}
+
+function normalizeMemoryReviewCursors(value) {
+  return Object.fromEntries(MEMBER_MEMORY_IDS.map((id) => [id, positiveInt(value?.[id], 0, 0, Number.MAX_SAFE_INTEGER)]));
 }
 
 function normalizeSignatures(value) {
@@ -363,7 +535,7 @@ function normalizeMessage(value) {
   const rawContent = clean(value?.content);
   const content = clean(value?.role === "assistant" && clean(value?.providerId) === "kimi"
     ? stripInternalTimeMetadata(rawContent)
-    : rawContent).slice(0, 12_000);
+    : rawContent);
   const attachments = normalizeAttachments(value?.attachments);
   if (!content && !attachments.length) return null;
   return {
@@ -430,6 +602,102 @@ function normalizeMemory(value) {
   };
 }
 
+function normalizeShortTermMemory(value) {
+  const text = clean(value?.text).replace(/\s+/gu, " ").slice(0, 800);
+  if (!text) return null;
+  const now = clean(value?.createdAt) || new Date().toISOString();
+  const tier = normalizeShortTier(value?.tier);
+  const defaultDays = tier === "hot" ? 3 : tier === "active" ? 14 : 30;
+  const expiresAt = validFutureIso(value?.expiresAt, now, defaultDays);
+  const namespace = normalizeNamespace(value?.namespace);
+  return {
+    id: clean(value?.id) || makeId(),
+    text,
+    namespace,
+    tier,
+    importance: normalizeImportance(value?.importance),
+    fingerprint: clean(value?.fingerprint).slice(0, 200) || contextFingerprint(namespace, text),
+    sourceRoundIds: uniqueStrings(value?.sourceRoundIds, 40),
+    embedding: normalizeEmbedding(value?.embedding),
+    embeddingModel: clean(value?.embeddingModel).slice(0, 200),
+    vectorStatus: normalizeVectorStatus(value),
+    createdAt: now,
+    updatedAt: clean(value?.updatedAt) || now,
+    expiresAt,
+  };
+}
+
+function normalizeEventMemory(value) {
+  const text = clean(value?.text || value?.event).replace(/\s+/gu, " ").slice(0, 800);
+  if (!text) return null;
+  const now = clean(value?.createdAt) || new Date().toISOString();
+  const namespace = normalizeNamespace(value?.namespace);
+  const date = clean(value?.date).slice(0, 32) || now.slice(0, 10);
+  const participants = uniqueStrings(value?.participants, 10);
+  return {
+    id: clean(value?.id) || makeId(),
+    text,
+    namespace,
+    date,
+    participants,
+    importance: normalizeImportance(value?.importance),
+    fingerprint: clean(value?.fingerprint).slice(0, 200) || contextFingerprint(namespace, `${date}:${participants.join(",")}:${text}`),
+    confirmedBy: uniqueStrings(value?.confirmedBy, 10),
+    sourceRoundIds: uniqueStrings(value?.sourceRoundIds, 40),
+    embedding: normalizeEmbedding(value?.embedding),
+    embeddingModel: clean(value?.embeddingModel).slice(0, 200),
+    vectorStatus: normalizeVectorStatus(value),
+    createdAt: now,
+    updatedAt: clean(value?.updatedAt) || now,
+  };
+}
+
+function normalizeMemberRound(value) {
+  const memberId = normalizeMemberMemoryId(value?.memberId);
+  const triggerText = clean(value?.triggerText).slice(0, 4_000);
+  const responseText = clean(value?.responseText).slice(0, 4_000);
+  if (!memberId || (!triggerText && !responseText)) return null;
+  const createdAt = clean(value?.createdAt) || new Date().toISOString();
+  const key = clean(value?.key).slice(0, 240)
+    || `${memberId}:${clean(value?.triggerMessageId) || createdAt}:${clean(value?.responseMessageId) || (value?.skipped ? "skip" : "reply")}`;
+  return {
+    id: clean(value?.id) || makeId(),
+    key,
+    sequence: positiveInt(value?.sequence, 0, 0, Number.MAX_SAFE_INTEGER),
+    memberId,
+    scene: value?.scene === "group" ? "group" : "private",
+    triggerMessageId: clean(value?.triggerMessageId).slice(0, 120),
+    triggerAuthor: clean(value?.triggerAuthor).slice(0, 80) || "Okra",
+    triggerText,
+    responseMessageId: clean(value?.responseMessageId).slice(0, 120),
+    responseText,
+    skipped: value?.skipped === true,
+    createdAt,
+  };
+}
+
+function rankContextMemories(memories, { query = "", queryVector = [], limit = 50 } = {}) {
+  const normalizedQuery = clean(query).toLowerCase();
+  const hasVector = Array.isArray(queryVector) && queryVector.length > 0;
+  const capped = positiveInt(limit, 50, 1, 200);
+  return memories.map((memory) => {
+    const lexical = normalizedQuery ? lexicalScore(memory, normalizedQuery) : 0;
+    const vectorScore = hasVector ? cosineSimilarity(memory.embedding, queryVector) : 0;
+    const ageDays = Math.max(0, (Date.now() - Date.parse(memory.updatedAt || memory.createdAt || 0)) / 86_400_000) || 0;
+    const recency = memory.expiresAt ? 1 / (1 + ageDays / 3) : 0.25 / (1 + ageDays / 180);
+    return {
+      memory,
+      score: (vectorScore * 8) + (Math.min(lexical, 20) * 0.35) + (memory.importance * 0.05) + recency,
+      vectorScore,
+    };
+  }).filter((item) => !normalizedQuery && !hasVector
+    ? true
+    : item.score > 0 && (!hasVector || item.vectorScore >= 0.28 || item.score > 1.5))
+    .sort((left, right) => right.score - left.score || right.memory.updatedAt.localeCompare(left.memory.updatedAt))
+    .slice(0, capped)
+    .map(({ memory, score, vectorScore }) => ({ ...memory, score, vectorScore }));
+}
+
 function normalizeEmbedding(value) {
   if (!Array.isArray(value)) return [];
   return value.slice(0, 2_048).map(Number).filter(Number.isFinite);
@@ -442,7 +710,11 @@ function normalizeVectorStatus(value) {
 
 function lexicalScore(memory, query) {
   const terms = query.split(/\s+/).filter(Boolean);
-  const text = `${memory.text} ${memory.tags.join(" ")} ${memory.namespace}`.toLowerCase();
+  const labels = [
+    ...(Array.isArray(memory.tags) ? memory.tags : []),
+    ...(Array.isArray(memory.participants) ? memory.participants : []),
+  ];
+  const text = `${memory.text} ${labels.join(" ")} ${memory.namespace}`.toLowerCase();
   let score = 0;
   for (const term of terms) {
     if (text.includes(term)) score += term.length + 1;
@@ -454,6 +726,49 @@ function lexicalScore(memory, query) {
 function normalizeNamespace(value, fallback = "shared") {
   const normalized = clean(value).toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 40);
   return normalized || fallback;
+}
+
+function normalizeMemberMemoryId(value) {
+  const id = clean(value).toLowerCase();
+  if (["gen", "openai", "codex-cli", "gpt"].includes(id)) return "g";
+  if (["shin", "glm"].includes(id)) return "glm";
+  if (["anthropic", "claude-code"].includes(id)) return "k";
+  return MEMBER_MEMORY_IDS.includes(id) ? id : "";
+}
+
+function normalizeShortTier(value) {
+  const tier = clean(value).toLowerCase();
+  return ["hot", "active", "fading"].includes(tier) ? tier : "active";
+}
+
+function validFutureIso(value, createdAt, days) {
+  const created = Date.parse(createdAt) || Date.now();
+  const parsed = Date.parse(clean(value));
+  const target = Number.isFinite(parsed) && parsed > created ? parsed : created + days * 86_400_000;
+  return new Date(target).toISOString();
+}
+
+function contextFingerprint(namespace, text) {
+  return `${namespace}:${clean(text).toLowerCase().replace(/[\s，。！？、,.!?;；:："“”'‘’（）()\[\]]+/gu, "")}`.slice(0, 200);
+}
+
+function chooseRicherText(left, right) {
+  const a = clean(left);
+  const b = clean(right);
+  return [...b].length > [...a].length ? b : a;
+}
+
+function strongerShortTier(left, right) {
+  const rank = { hot: 1, active: 2, fading: 3 };
+  return rank[normalizeShortTier(right)] > rank[normalizeShortTier(left)] ? normalizeShortTier(right) : normalizeShortTier(left);
+}
+
+function laterIso(left, right) {
+  return Date.parse(right) > Date.parse(left) ? right : left;
+}
+
+function uniqueStrings(value, limit) {
+  return [...new Set((Array.isArray(value) ? value : []).map((item) => clean(item).slice(0, 120)).filter(Boolean))].slice(0, limit);
 }
 
 function normalizeTags(value) {

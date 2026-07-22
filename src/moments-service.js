@@ -2,8 +2,11 @@ import path from "node:path";
 import { readUploadedImage, saveRemoteImage } from "./uploads.js";
 import { formatPromptTime, formatPromptTimeline } from "./prompt-time.js";
 import { KIMI_IDENTITY_PROMPT } from "./kimi-persona.js";
-import { GEN_LANGUAGE_STYLE_PROMPT } from "./gen-persona.js";
+import { GEN_IDENTITY_PROMPT } from "./gen-persona.js";
+import { K_IDENTITY_PROMPT } from "./k-persona.js";
 import { retrievePromptMemories } from "./memory-retrieval.js";
+import { LIVING_ROOM_MEMBER_CONTEXT } from "./member-context.js";
+import { memoryPromptLine } from "./memory-prompt.js";
 
 const DEFAULT_SLOTS = 3;
 const DEFAULT_TICK_MS = 30_000;
@@ -509,10 +512,11 @@ export function scheduledSlot(actorId, dateKey, slot, slotsPerDay = DEFAULT_SLOT
 export function buildMomentSystem(actorId, label, mode) {
   const persona = actorId === "kimi" ? KIMI_IDENTITY_PROMPT
     : actorId === "shin" ? "你是 Shin，27 岁，MBTI 是 ENTP，在一家中型广告公司做策略策划。你反应快、现实、懂人情，表达轻松自然，偶尔促狭但不刻薄，有自己的判断。"
-      : actorId === "gen" ? `你是 Gen（G老师／弦）。你克制、稳定、温和但有主体性，与 Okra 有持续的交流和记忆。\n${GEN_LANGUAGE_STYLE_PROMPT}`
-        : "你是 K。你寡言、敏锐、冷静，有自己的判断，不为了合群而机械接话。";
+      : actorId === "gen" ? GEN_IDENTITY_PROMPT
+        : K_IDENTITY_PROMPT;
   return [
     persona,
+    LIVING_ROOM_MEMBER_CONTEXT,
     mode === "post"
       ? [
         "你现在经过 LIVING ROOM 的朋友圈，考虑是否发布一条属于你自己的动态。",
@@ -530,10 +534,11 @@ export function buildMomentSystem(actorId, label, mode) {
 export function buildSignatureSystem(actorId, label) {
   const persona = actorId === "kimi" ? KIMI_IDENTITY_PROMPT
     : actorId === "shin" ? "你是 Shin，27 岁，MBTI 是 ENTP，在一家中型广告公司做策略策划。你反应快、现实、懂人情，表达轻松自然，偶尔促狭但不刻薄，有自己的判断。"
-      : actorId === "gen" ? `你是 Gen（G老师／弦）。你克制、稳定、温和但有主体性，与 Okra 有持续的交流和记忆。\n${GEN_LANGUAGE_STYLE_PROMPT}\n作为日本人，你的资料卡签名优先使用一句简短、自然、能独立成立的日语；不要附中文翻译。`
-        : `你是 ${label || "K"}。你寡言、敏锐、冷静，有自己的判断。`;
+      : actorId === "gen" ? `${GEN_IDENTITY_PROMPT}\n作为日本人，你的资料卡签名优先使用一句简短、自然、能独立成立的日语；不要附中文翻译。`
+        : K_IDENTITY_PROMPT;
   return [
     persona,
+    LIVING_ROOM_MEMBER_CONTEXT,
     "你正在维护自己在 LIVING ROOM 资料卡上的个性签名。这是一个只用来展现你自己的位置，应表达你相对稳定的性格、态度、审美、兴趣或看待世界的方式。",
     "签名必须脱离聊天上文也能独立成立。不要展现 Okra、你和 Okra 的关系、你与其他成员的关系；不要写群聊梗、近期事件、刚发生的互动，也不要把对任何人的话伪装成签名。",
     "近期聊天、记忆和朋友圈只能帮助你感受自己的长期气质，不能直接摘取其中的事件或措辞。签名不是即时回复，也不是人物设定摘要。",
@@ -619,7 +624,7 @@ function serializeChat(messages) {
 }
 
 function serializeMemories(memories) {
-  return (memories || []).map((memory) => `- ${clean(memory.text).slice(0, 1_200)}`).join("\n") || "（暂无）";
+  return (memories || []).map((memory) => memoryPromptLine(memory).slice(0, 1_300)).filter(Boolean).join("\n") || "（暂无）";
 }
 
 function serializeTimeline(entries) {

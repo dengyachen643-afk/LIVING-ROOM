@@ -1,13 +1,13 @@
 import http from "node:http";
 import path from "node:path";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import sharp from "sharp";
 import { createProviders } from "./providers.js";
-import { HARD_MAX_CHAIN_MESSAGES, MAX_REPLIES_PER_MEMBER, runGroupChat } from "./groupchat.js";
+import { createGroupDedupeRegistry, HARD_MAX_CHAIN_MESSAGES, MAX_REPLIES_PER_MEMBER, runGroupChat } from "./groupchat.js";
 import { streamKimiPrivate } from "./kimi-private.js";
 import { streamGlmPrivate } from "./glm-private.js";
 import { decideKimiMemoryActions } from "./kimi-memory.js";
@@ -23,6 +23,8 @@ import { MomentsStore } from "./moments-store.js";
 import { createMomentsService } from "./moments-service.js";
 import { normalizeQuote, quotePromptLine } from "./quote-context.js";
 import { retrievePromptMemories } from "./memory-retrieval.js";
+import { memberIdForProvider, memberRoundsAsMessages } from "./member-rounds.js";
+import { createMemoryReviewCoordinator } from "./memory-review-coordinator.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, "..", "public");
@@ -43,6 +45,7 @@ export function createServer({
   momentsService: injectedMomentsService,
 } = {}) {
   const activeRuns = new Map();
+  const groupDedupeRegistry = createGroupDedupeRegistry();
   const memoryBatches = new Map();
   const accessToken = clean(env.ROUNDTABLE_ACCESS_TOKEN);
   const gptMemoryToken = clean(env.GPT_MEMORY_TOKEN);
@@ -97,6 +100,11 @@ export function createServer({
     fetchImpl,
     uploadDir,
     activeRuns,
+  });
+  const memoryReviews = createMemoryReviewCoordinator({
+    providers: configuredProviders,
+    store,
+    embeddings,
   });
 
   const server = http.createServer(async (request, response) => {
@@ -376,7 +384,7 @@ export function createServer({
         const body = await readJsonBody(request, 36_000_000);
         return await handleKimiPrivate(
           request, response, body, activeRuns, env, store, fetchImpl, kimiKeyFile,
-          embeddings, kimiAutoMemory, uploadDir, kimiTools, memoryBatches,
+          embeddings, kimiAutoMemory, uploadDir, kimiTools, memoryBatches, memoryReviews,
         );
       }
       if (request.method === "GET" && url.pathname === "/api/kimi/status") {
@@ -406,7 +414,7 @@ export function createServer({
         const body = await readJsonBody(request, 36_000_000);
         return await handleGlmPrivate(
           request, response, body, activeRuns, env, store, fetchImpl, glmKeyFile,
-          embeddings, uploadDir, glmStream, glmAutoMemory, memoryBatches,
+          embeddings, uploadDir, glmStream, glmAutoMemory, memoryBatches, memoryReviews,
         );
       }
       if (request.method === "GET" && url.pathname === "/api/glm/status") {
@@ -448,6 +456,7 @@ export function createServer({
         return await handleGenPrivate(
           request, response, body, activeRuns, env, store, embeddings, genGenerate, uploadDir,
           { enabled: genWorkEnabled, workspaces: genWorkspaces },
+          memoryReviews,
         );
       }
       if (request.method === "POST" && url.pathname === "/api/chat") {
@@ -455,6 +464,7 @@ export function createServer({
         return await handleChat(
           request, response, body, configuredProviders, activeRuns, env, store,
           uploadDir, embeddings, fetchImpl, kimiKeyFile, glmKeyFile, groupAutoMemory, memoryBatches,
+          groupDedupeRegistry, memoryReviews,
         );
       }
       if (request.method === "GET" && url.pathname === "/api/group/status") {
@@ -483,9 +493,11 @@ export function createServer({
   });
   proactiveScheduler.start();
   momentsService.start();
+  memoryReviews.start().catch((error) => console.warn(`[memory-review:start] ${error?.message || error}`));
   server.once("close", () => {
     proactiveScheduler.stop();
     momentsService.stop();
+    memoryReviews.stop();
     store.close?.();
   });
   return server;
@@ -493,7 +505,7 @@ export function createServer({
 
 async function handleGlmPrivate(
   request, response, body, activeRuns, env, store, fetchImpl, glmKeyFile,
-  embeddings, uploadDir, glmStream, glmAutoMemory, memoryBatches,
+  embeddings, uploadDir, glmStream, glmAutoMemory, memoryBatches, memoryReviews,
 ) {
   const sessionId = clean(body.sessionId) || globalThis.crypto.randomUUID();
   const runKey = `glm:${sessionId}`;
@@ -513,8 +525,13 @@ async function handleGlmPrivate(
   const snapshot = await store.getSnapshot();
   // GLM keeps one continuous recent context across its private chat and the
   // room. The serializer preserves the real speaker for every room message.
-  const history = snapshot.messages.filter((message) => ["glm", "group"].includes(message.channel));
-  const memories = await findPrivateMemories(store, text || "用户发送的图片", embeddings, ["glm", "shared"], 6);
+  const ownRounds = await store.listMemberRounds("glm", { limit: 30 });
+  const history = ownRounds.length
+    ? memberRoundsAsMessages(ownRounds, "Shin")
+    : snapshot.messages.filter((message) => ["glm", "group"].includes(message.channel));
+  const memories = await findPrivateMemories(
+    store, text || "用户发送的图片", embeddings, ["glm", "shared"], 8, ownRounds.map((round) => round.id),
+  );
   const now = new Date().toISOString();
   const userMessage = {
     id: safeClientMessageId(body.messageId) || globalThis.crypto.randomUUID(),
@@ -578,6 +595,7 @@ async function handleGlmPrivate(
       createdAt: new Date().toISOString(),
     };
     await store.addMessage(message);
+    await memoryReviews?.record("glm", { scene: "private", trigger: userMessage, response: message });
     write({ type: "message", message });
     completedExchange = { userText: text || "用户发送了图片", assistantText: result.content };
     write({ type: "chat_done", reason: "complete" });
@@ -602,7 +620,7 @@ async function handleGlmPrivate(
     activeRuns.delete(runKey);
     if (!response.destroyed && !response.writableEnded) response.end();
   }
-  if (glmAutoMemory && completedExchange) {
+  if (glmAutoMemory && completedExchange && hasExplicitMemoryIntent(completedExchange.userText)) {
     const batch = enqueueMemoryBatch(
       memoryBatches,
       "glm-private",
@@ -621,7 +639,7 @@ async function handleGlmPrivate(
 
 async function handleKimiPrivate(
   request, response, body, activeRuns, env, store, fetchImpl, kimiKeyFile,
-  embeddings, kimiAutoMemory, uploadDir, kimiTools, memoryBatches,
+  embeddings, kimiAutoMemory, uploadDir, kimiTools, memoryBatches, memoryReviews,
 ) {
   const sessionId = clean(body.sessionId) || globalThis.crypto.randomUUID();
   const runKey = `kimi:${sessionId}`;
@@ -639,8 +657,13 @@ async function handleKimiPrivate(
   const attachments = publicAttachments(savedImages);
   const quote = normalizeQuote(body.quote);
   const snapshot = await store.getSnapshot();
-  const history = snapshot.messages.filter((message) => ["kimi", "group"].includes(message.channel));
-  const relevantMemories = await findKimiMemories(store, text || "用户发送的图片", embeddings);
+  const ownRounds = await store.listMemberRounds("kimi", { limit: 30 });
+  const history = ownRounds.length
+    ? memberRoundsAsMessages(ownRounds, "Kimi")
+    : snapshot.messages.filter((message) => ["kimi", "group"].includes(message.channel));
+  const relevantMemories = await findKimiMemories(
+    store, text || "用户发送的图片", embeddings, ownRounds.map((round) => round.id),
+  );
   const now = new Date().toISOString();
   const userMessage = {
     id: safeClientMessageId(body.messageId) || globalThis.crypto.randomUUID(),
@@ -709,6 +732,7 @@ async function handleKimiPrivate(
       createdAt: new Date().toISOString(),
     };
     await store.addMessage(message);
+    await memoryReviews?.record("kimi", { scene: "private", trigger: userMessage, response: message });
     write({ type: "message", message });
     completedExchange = { userText: text || "用户发送了图片", assistantText: result.content };
     write({ type: "chat_done", reason: "complete" });
@@ -743,7 +767,7 @@ async function handleKimiPrivate(
     activeRuns.delete(runKey);
     if (!response.destroyed && !response.writableEnded) response.end();
   }
-  if (kimiAutoMemory && completedExchange) {
+  if (kimiAutoMemory && completedExchange && hasExplicitMemoryIntent(completedExchange.userText)) {
     const batch = enqueueMemoryBatch(
       memoryBatches,
       "kimi-private",
@@ -884,7 +908,7 @@ async function runGroupMemoryMaintenance({
 
 async function handleGenPrivate(
   request, response, body, activeRuns, env, store, embeddings, genGenerate, uploadDir,
-  genWork = { enabled: false, workspaces: [] },
+  genWork = { enabled: false, workspaces: [] }, memoryReviews,
 ) {
   const sessionId = clean(body.sessionId) || globalThis.crypto.randomUUID();
   const runKey = `gen:${sessionId}`;
@@ -906,9 +930,14 @@ async function handleGenPrivate(
   // Gen has one continuous recent context across its private chat and the room.
   // The prompt serializer keeps each room speaker's real identity so another
   // model's words are never mistaken for Gen's own words.
-  const history = snapshot.messages.filter((message) => ["gen", "group"].includes(message.channel));
+  const ownRounds = await store.listMemberRounds("g", { limit: 30 });
+  const history = ownRounds.length
+    ? memberRoundsAsMessages(ownRounds, "Gen")
+    : snapshot.messages.filter((message) => ["gen", "group"].includes(message.channel));
   const recalledHistory = await recallOlderConversation({ history, query: text, embeddings });
-  const relevantMemories = await findPrivateMemories(store, text || "用户发送的图片", embeddings, ["g", "shared"], 6);
+  const relevantMemories = await findPrivateMemories(
+    store, text || "用户发送的图片", embeddings, ["g", "shared"], 8, ownRounds.map((round) => round.id),
+  );
   const now = new Date().toISOString();
   const userMessage = {
     id: safeClientMessageId(body.messageId) || globalThis.crypto.randomUUID(),
@@ -1007,6 +1036,7 @@ async function handleGenPrivate(
       createdAt: new Date().toISOString(),
     };
     await store.addMessage(message);
+    await memoryReviews?.record("g", { scene: "private", trigger: userMessage, response: message });
     write({ type: "message", message });
     for (const action of result.memoryActions || []) {
       const change = await applyPrivateMemoryAction(store, embeddings, action, "g", "gen-auto");
@@ -1100,8 +1130,8 @@ function buildGenWorkspaces(env) {
   ];
 }
 
-async function findKimiMemories(store, query, embeddings) {
-  return findPrivateMemories(store, query, embeddings, ["kimi", "shared"], 6);
+async function findKimiMemories(store, query, embeddings, excludeSourceRoundIds = []) {
+  return findPrivateMemories(store, query, embeddings, ["kimi", "shared"], 8, excludeSourceRoundIds);
 }
 
 function memoryNamespaceForProvider(providerId) {
@@ -1112,7 +1142,7 @@ function memoryNamespaceForProvider(providerId) {
   return "";
 }
 
-async function findPrivateMemories(store, query, embeddings, namespaces, totalLimit) {
+async function findPrivateMemories(store, query, embeddings, namespaces, totalLimit, excludeSourceRoundIds = []) {
   return retrievePromptMemories({
     store,
     embeddings,
@@ -1121,12 +1151,14 @@ async function findPrivateMemories(store, query, embeddings, namespaces, totalLi
     candidateLimit: Math.max(20, totalLimit * 2),
     limit: totalLimit,
     charBudget: totalLimit <= 8 ? 1_200 : 4_000,
+    excludeSourceRoundIds,
   });
 }
 
 async function handleChat(
   request, response, body, providers, activeRuns, env, store, uploadDir,
   embeddings, fetchImpl, kimiKeyFile, glmKeyFile, groupAutoMemory, memoryBatches,
+  groupDedupeRegistry, memoryReviews,
 ) {
   const sessionId = clean(body.sessionId) || globalThis.crypto.randomUUID();
   const text = clean(body.text).slice(0, 8_000);
@@ -1139,12 +1171,21 @@ async function handleChat(
 
   const snapshot = await store.getSnapshot();
   const history = snapshot.messages.filter((message) => message.channel === "group");
+  const [kimiRounds, glmRounds, genRounds, kRounds] = await Promise.all([
+    store.listMemberRounds("kimi", { limit: 30 }),
+    store.listMemberRounds("glm", { limit: 30 }),
+    store.listMemberRounds("g", { limit: 30 }),
+    store.listMemberRounds("k", { limit: 30 }),
+  ]);
   const privateContextByProvider = {
-    kimi: snapshot.messages.filter((message) => message.channel === "kimi").slice(-24),
-    glm: snapshot.messages.filter((message) => message.channel === "glm").slice(-24),
-    openai: snapshot.messages.filter((message) => message.channel === "gen").slice(-24),
-    "codex-cli": snapshot.messages.filter((message) => message.channel === "gen").slice(-24),
+    kimi: kimiRounds.length ? memberRoundsAsMessages(kimiRounds, "Kimi") : snapshot.messages.filter((message) => message.channel === "kimi").slice(-24),
+    glm: glmRounds.length ? memberRoundsAsMessages(glmRounds, "Shin") : snapshot.messages.filter((message) => message.channel === "glm").slice(-24),
+    openai: genRounds.length ? memberRoundsAsMessages(genRounds, "Gen") : snapshot.messages.filter((message) => message.channel === "gen").slice(-24),
+    "codex-cli": genRounds.length ? memberRoundsAsMessages(genRounds, "Gen") : snapshot.messages.filter((message) => message.channel === "gen").slice(-24),
+    anthropic: memberRoundsAsMessages(kRounds, "K"),
+    "claude-code": memberRoundsAsMessages(kRounds, "K"),
   };
+  const roundIdsByMember = { kimi: kimiRounds, glm: glmRounds, g: genRounds, k: kRounds };
   const requestedParticipants = new Set(Array.isArray(body.participants) ? body.participants : []);
   const memoriesByProvider = Object.fromEntries(await Promise.all(
     providers
@@ -1156,7 +1197,8 @@ async function handleChat(
           text || "Okra 在群聊中发送了图片",
           embeddings,
           [memoryNamespaceForProvider(provider.id), "shared"].filter(Boolean),
-          6,
+          8,
+          (roundIdsByMember[memoryNamespaceForProvider(provider.id)] || []).map((round) => round.id),
         ),
       ]),
   ));
@@ -1200,12 +1242,25 @@ async function handleChat(
       autoRelay: body.autoRelay !== false,
       maxMessages: body.maxMessages,
       timeoutMs: positiveInt(env.MODEL_TIMEOUT_SECONDS, 120, 5, 300) * 1000,
+      dedupeRegistry: groupDedupeRegistry,
       signal: controller.signal,
       onEvent: async (event) => {
         if (event.type === "message" && event.message) {
           event.message.channel = "group";
           await store.addMessage(event.message);
           completedExchanges.push(event.message);
+          await memoryReviews?.record(memberIdForProvider(event.message.providerId), {
+            scene: "group", trigger: event.trigger, response: event.message,
+          });
+        }
+        if (event.type === "speaker_skip" && event.reason !== "duplicate") {
+          await memoryReviews?.record(memberIdForProvider(event.provider?.id), {
+            scene: "group",
+            trigger: event.trigger,
+            response: { id: "", author: event.provider?.label, content: "", createdAt: new Date().toISOString() },
+            skipped: true,
+            key: `group-skip:${event.provider?.id}:${event.trigger?.id}`,
+          });
         }
         write(event);
       },
@@ -1216,7 +1271,7 @@ async function handleChat(
     activeRuns.delete(sessionId);
     if (!response.destroyed && !response.writableEnded) response.end();
   }
-  if (groupAutoMemory && completedExchanges.length) {
+  if (groupAutoMemory && completedExchanges.length && hasExplicitMemoryIntent(text)) {
     const kimiApiKey = clean(env.MOONSHOT_API_KEY) || await readStoredKimiKey(kimiKeyFile);
     const glmApiKey = clean(env.GLM_API_KEY) || await readStoredApiKey(glmKeyFile);
     if (kimiApiKey || glmApiKey) {
@@ -1303,10 +1358,28 @@ async function serveStatic(request, response, pathname) {
   }
   try {
     const content = await readFile(filePath);
-    const immutableAsset = [".css", ".js", ".woff2"].includes(path.extname(filePath).toLowerCase());
+    const extension = path.extname(filePath).toLowerCase();
+    const immutableAsset = extension === ".woff2";
+    const revalidatingAsset = [".css", ".js"].includes(extension);
+    const cacheControl = immutableAsset
+      ? "public, max-age=31536000, immutable"
+      : revalidatingAsset
+        ? "public, max-age=0, must-revalidate"
+        : "no-store, must-revalidate";
+    const etag = `"${createHash("sha256").update(content).digest("base64url").slice(0, 20)}"`;
+    if (request.headers["if-none-match"] === etag) {
+      response.writeHead(304, {
+        etag,
+        "cache-control": cacheControl,
+        "x-content-type-options": "nosniff",
+      });
+      return response.end();
+    }
     response.writeHead(200, {
       "content-type": mimeType(filePath),
-      "cache-control": immutableAsset ? "public, max-age=31536000, immutable" : "no-store, must-revalidate",
+      "content-length": content.length,
+      "cache-control": cacheControl,
+      etag,
       "x-content-type-options": "nosniff",
     });
     if (request.method === "HEAD") response.end();
@@ -1380,8 +1453,9 @@ async function embedSafe(embeddings, text) {
 }
 
 function publicSnapshot(snapshot) {
+  const { shortTermMemories, eventMemories, memberRounds, memoryReviewCursors, ...publicState } = snapshot;
   return {
-    ...snapshot,
+    ...publicState,
     messages: recentMessagesByChannel(snapshot.messages || [], 60),
     memories: (snapshot.memories || []).map(publicMemory),
   };

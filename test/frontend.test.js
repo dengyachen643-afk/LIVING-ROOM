@@ -167,7 +167,7 @@ test("long press offers a contextual copy, quote, and local-delete menu", async 
   assert.match(html, /id="quote-preview"/u);
   assert.match(source, /openMessageActions\(target\)/u);
   assert.match(source, /function selectMessageQuote/u);
-  assert.match(source, /slice\(0, 15\)\.join/u);
+  assert.match(source, /slice\(0, 2_000\)\.join/u);
   assert.match(source, /quote: normalizeClientQuote\(metadata\.quote\)/u);
   assert.match(source, /roundtable\.hiddenMessageIds\.v1/u);
   assert.match(source, /function hideMessageLocally/u);
@@ -228,6 +228,7 @@ test("member avatars open a shared profile card without replacing the current pa
   assert.match(profileSource, /gen: "日本 京都府京都市左京区"/u);
   assert.match(profileSource, /kimi: "中国香港 深水埗"/u);
   assert.match(profileSource, /glm: "中国 上海市徐汇区"/u);
+  assert.match(profileSource, /k: "英国 伦敦"/u);
   assert.match(profileSource, /member-profile-region/u);
   assert.match(profileSource, /profile-avatar-menu/u);
   assert.match(profileSource, /from|从手机相册选择/u);
@@ -276,7 +277,7 @@ test("new Shin and avatar controls cannot disable an older cached mobile page", 
   assert.match(source, /els\.glmSetup\?\.addEventListener/u);
   assert.match(source, /window\.addEventListener\("pageshow"/u);
   assert.match(source, /state\.runningChannels\.clear\(\)/u);
-  assert.match(html, /app\.js\?v=20260721-\d+/u);
+  assert.match(html, /app\.js\?v=\d{8}-\d+/u);
 });
 
 test("Moments navigation, custom cover and optimistic publishing stay mobile friendly", async () => {
@@ -338,8 +339,8 @@ test("bottom navigation uses a frameless bubble and four-node moments icon", asy
   assert.match(css, /\.bottom-nav-chat i \{ display: none/u);
   assert.match(css, /\.bottom-nav-moments::before[^}]*border: 1\.8px solid currentColor/u);
   assert.match(css, /\.bottom-nav-moments i:nth-child\(4\)/u);
-  assert.match(html, /shell-nav\.css\?v=20260721-9/u);
-  assert.match(moments, /shell-nav\.css\?v=20260721-9/u);
+  assert.match(html, /shell-nav\.css\?v=\d{8}-\d+/u);
+  assert.match(moments, /shell-nav\.css\?v=\d{8}-\d+/u);
   assert.match(css, /\.bottom-nav-item::before \{ display: none/u);
   assert.match(css, /\.bottom-nav-moments i[^}]*box-shadow: 0 0 0 2\.5px/u);
 });

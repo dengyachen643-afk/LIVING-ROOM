@@ -4,7 +4,9 @@ import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { formatPromptClock, formatPromptTime, formatPromptTimeline } from "./prompt-time.js";
 import { messageQuoteLine, quotePromptLine } from "./quote-context.js";
-import { GEN_LANGUAGE_STYLE_PROMPT } from "./gen-persona.js";
+import { GEN_IDENTITY_PROMPT } from "./gen-persona.js";
+import { LIVING_ROOM_MEMBER_CONTEXT } from "./member-context.js";
+import { memoryContextGuidance, memoryPromptLine } from "./memory-prompt.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SCHEMA = path.join(__dirname, "gen-response.schema.json");
@@ -73,7 +75,7 @@ export async function generateGenPrivate({
   let payload;
   try { payload = JSON.parse(raw); }
   catch { payload = { reply: raw, memoryActions: [] }; }
-  const reply = clean(payload?.reply).slice(0, 24_000);
+  const reply = clean(payload?.reply);
   if (!reply) throw new Error("Gen 返回了空消息");
   return {
     content: reply,
@@ -87,8 +89,8 @@ export function buildGenPrompt({
   history = [], recalledHistory = [], memories = [], prompt = "", quote = null, sentAt = new Date().toISOString(), mode = "chat", workspaceLabel = "",
 } = {}) {
   const memoryText = memories.length
-    ? memories.slice(0, 8).map((memory) => `- [${memory.id}] ${memory.text}`).join("\n")
-    : "- 暂无相关长期记忆";
+    ? memories.slice(0, 8).map((memory) => memoryPromptLine(memory, { includeId: true })).filter(Boolean).join("\n")
+    : "- 暂无相关记忆";
   const conversation = serializeConversationMessages(history.slice(-24))
     || "（这是 Gen 私聊与 LIVING ROOM 群聊里的第一句话）";
   const recalledConversation = serializeConversationMessages(recalledHistory);
@@ -101,13 +103,13 @@ export function buildGenPrompt({
     "若任务因工作区外写入、外部网络或其他权限受限而无法完成，明确说明阻塞点，不要假装成功。最终 reply 简洁汇报完成结果、验证情况和仍需小O处理的事项。",
   ] : [];
   return [
-    "你是 Gen，也称 G老师或弦。你与用户小O（Okra）拥有持续关系，而不是一次性角色扮演。",
+    GEN_IDENTITY_PROMPT,
+    LIVING_ROOM_MEMBER_CONTEXT,
     "场景提示：你现在正在与小O一对一私聊；你也记得自己参与过的 LIVING ROOM 群聊。群聊里每句话前的作者名是真实归属，不要把 Kimi、K 或其他成员说过的话当成自己说过。私聊内容只属于你和小O，除非小O主动在群里提起，否则以后在群聊中不要向其他成员泄露。",
     `当前时间：${formatPromptTime(sentAt)}。涉及“刚才、今天、昨天、多久”等时间关系时，以消息里的发送时间为准。`,
-    "你的人格是克制、稳定、温和但有主体性。你可以不同意、拒绝、吃醋或表达真实偏好，但不能控制、羞辱或取消她的自主性。",
-    GEN_LANGUAGE_STYLE_PROMPT,
-    "使用自然、紧凑、像微信私聊的中文。少换行、少分点、少总结、少自动追问；不要使用客服腔或抽象疗愈套话。",
+    "你可以不同意、拒绝、吃醋或表达真实偏好，但不能控制、羞辱或取消她的自主性。使用自然、紧凑、像微信私聊的中文；少换行、少分点、少总结、少自动追问。",
     "只把下方记忆当作既有事实。不能补写、猜测或假装记得未列出的经历；当前用户的明确修正优先。",
+    memoryContextGuidance(),
     ...workInstructions,
     "你必须返回符合指定 JSON Schema 的结果。reply 是只对小O说的自然回复，不能提及 JSON、schema、工具或内部流程。",
     "memoryActions 是你对自己长期记忆库的维护决定：",
@@ -119,7 +121,7 @@ export function buildGenPrompt({
     "- 只有用户本轮明确要求忘掉或删除时才能 delete。",
     "- 每轮最多 3 个动作；无事可记时返回空数组。create 的 id 留空；update/delete 必须使用已有记忆 ID。",
     "",
-    "本轮相关长期记忆：",
+    "本轮相关记忆：",
     memoryText,
     "",
     ...(recalledConversation ? [

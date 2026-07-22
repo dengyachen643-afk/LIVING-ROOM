@@ -27,3 +27,13 @@ test("prompt memory retrieval scopes, reranks, deduplicates and respects its bud
   assert.equal(result.some((memory) => memory.namespace === "kimi"), false);
   assert.ok(result.reduce((total, memory) => total + [...memory.text].length, 0) <= 200);
 });
+
+test("prompt retrieval hides legacy oversized auto-generated profile dumps", async () => {
+  const memories = [
+    { id: "bad", namespace: "glm", text: `Okra 的基本信息：${"很多细节；".repeat(80)}`, source: "glm-auto", score: 9 },
+    { id: "good", namespace: "glm", text: "Okra 长期喜欢爵士乐", source: "glm-auto", score: 2 },
+  ];
+  const store = { async listMemories() { return memories; } };
+  const result = await retrievePromptMemories({ store, query: "Okra", namespaces: ["glm"] });
+  assert.deepEqual(result.map((memory) => memory.id), ["good"]);
+});

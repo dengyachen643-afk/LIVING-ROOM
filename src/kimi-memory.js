@@ -1,3 +1,9 @@
+import {
+  AUTO_MEMORY_MAX_CHARS,
+  EXPLICIT_MEMORY_MAX_CHARS,
+  normalizeAutoMemoryText,
+} from "./memory-quality.js";
+
 const DEFAULT_MODEL = "kimi-k3";
 const DEFAULT_BASE_URL = "https://api.moonshot.cn/v1";
 
@@ -6,11 +12,13 @@ const MEMORY_RULES = [
   "用户的明确记忆指令优先于主动保存过滤规则：如果用户明确要求记住当前成员本人的稳定人设、外貌设定、表达偏好或双方关系设定，只要不涉及秘密或高度敏感信息，也必须创建或更新记忆。",
   "你也可以主动保存稳定且未来有帮助的信息，例如身份背景、长期偏好、持续项目、重要关系事实、明确决定和长期目标。",
   "不要主动保存寒暄、临时情绪、一次性安排、未经确认的推测，或当前成员临时生成的观点；但用户明确要求保存为稳定设定时除外。",
+  "把长期记忆理解为至少未来数周仍可能有用的稳定事实。今天或本轮的工作进度、修 bug、去重、部署、服务器操作、临时计划和一次性待办都不是长期记忆，除非用户明确要求记住。",
   "绝不保存 API Key、密码、证件、银行卡、精确住址等秘密或高度敏感信息。",
   "先检查已有记忆：同一件事已有记录时更新，不要创建近义重复项。",
   "只有用户在本轮明确要求忘记、删除或不再记住时才允许删除。不得自行删除。",
-  "每轮最多执行 3 个操作；不需要维护记忆时不要调用任何工具。",
-  "记忆文本应独立、简洁、可供未来对话直接理解，使用第三人称描述用户、当前成员本人的稳定设定或双方关系事实。",
+  "主动整理时每轮最多执行 2 个操作；用户明确要求记住时最多 3 个。不需要维护记忆时不要调用任何工具。",
+  `一条记忆只能表达一个事实或一个紧密主题，推荐不超过 80 字，绝不能超过 ${AUTO_MEMORY_MAX_CHARS} 字。禁止把多轮聊天压缩成“基本信息”“人物档案”或把身份、工作、关系、偏好、近期状态堆进同一条记忆。`,
+  "记忆文本应独立、简洁、可供未来对话直接理解，使用第三人称描述用户、当前成员本人的稳定设定或双方关系事实。信息很多时应拆成少量原子记忆；无法确认长期价值时宁可不保存。",
 ];
 
 const tools = [
@@ -23,7 +31,7 @@ const tools = [
         type: "object",
         required: ["text"],
         properties: {
-          text: { type: "string", description: "独立、持久且简洁的记忆事实" },
+          text: { type: "string", maxLength: EXPLICIT_MEMORY_MAX_CHARS, description: "只包含一个独立、持久且简洁的记忆事实" },
           tags: { type: "array", items: { type: "string" }, maxItems: 6 },
           importance: { type: "integer", minimum: 1, maximum: 5 },
           reason: { type: "string" },
@@ -41,7 +49,7 @@ const tools = [
         required: ["id", "text"],
         properties: {
           id: { type: "string" },
-          text: { type: "string" },
+          text: { type: "string", maxLength: EXPLICIT_MEMORY_MAX_CHARS },
           tags: { type: "array", items: { type: "string" }, maxItems: 6 },
           importance: { type: "integer", minimum: 1, maximum: 5 },
           reason: { type: "string" },
@@ -154,17 +162,18 @@ export async function decideKimiMemoryActions({
   if (!Array.isArray(calls)) return selfSettingText ? [selfSettingCreateAction(selfSettingText)] : [];
   const explicitDelete = /(?:忘掉|忘记|删掉|删除|清除|别再记|不要记得|不再记住)/u.test(userText);
   const actions = [];
-  for (const call of calls.slice(0, 3)) {
+  const actionLimit = explicitSaveIntent ? 3 : 2;
+  for (const call of calls.slice(0, actionLimit)) {
     const name = clean(call?.function?.name);
     let args = {};
     try { args = JSON.parse(call?.function?.arguments || "{}"); } catch { continue; }
     if (name === "create_memory") {
-      const text = clean(args.text).slice(0, 4_000);
+      const text = normalizeAutoMemoryText(args.text, { explicit: explicitSaveIntent });
       if (text) actions.push({ type: "create", text, tags: normalizeTags(args.tags), importance: importance(args.importance), reason: clean(args.reason) });
     }
     if (name === "update_memory") {
       const id = clean(args.id);
-      const text = clean(args.text).slice(0, 4_000);
+      const text = normalizeAutoMemoryText(args.text, { explicit: explicitSaveIntent });
       if (knownIds.has(id) && text) actions.push({ type: "update", id, text, tags: normalizeTags(args.tags), importance: importance(args.importance), reason: clean(args.reason) });
     }
     if (name === "delete_memory" && explicitDelete) {
@@ -209,7 +218,7 @@ export function explicitSelfSettingMemory(userText, assistantText, ownerName) {
     .filter(Boolean)
     .filter((part) => !/(?:^好[，,。！!]?我记|我记着|记住了|存进|写入|保存成功|这次.*(?:吗|没)[？?]?)/u.test(part));
   const details = clean(parts.join(" ")) || clean(assistantText);
-  return details ? `${owner} 的稳定设定：${details}`.slice(0, 4_000) : "";
+  return details ? [...`${owner} 的稳定设定：${details}`].slice(0, EXPLICIT_MEMORY_MAX_CHARS).join("") : "";
 }
 
 function normalizeTags(value) {

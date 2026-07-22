@@ -82,6 +82,14 @@ test("RoundtableStore keeps image-only messages and tool activity", async () => 
   assert.equal(snapshot.messages[1].toolCalls[0].name, "web_search");
 });
 
+test("RoundtableStore does not truncate long assistant replies", async () => {
+  const store = new RoundtableStore({ filePath: "", archiveFilePath: ":memory:" });
+  const content = `${"完整正文。".repeat(4_000)}结尾仍然存在`;
+  await store.addMessage({ role: "assistant", providerId: "glm", channel: "glm", content });
+  assert.equal((await store.getSnapshot()).messages[0].content, content);
+  store.close();
+});
+
 test("memories support GPT namespaces, updates and keyword search", async () => {
   const store = new RoundtableStore({ filePath: "" });
   const memory = await store.addMemory({

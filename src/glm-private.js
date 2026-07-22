@@ -1,6 +1,14 @@
 import { formatPromptClock, formatPromptDay, formatPromptTime, stripInternalTimeMetadata } from "./prompt-time.js";
-import { formatGlmSearchContext, runGlmWebSearch, shouldGlmWebSearch } from "./glm-search.js";
+import {
+  GLM_SEARCH_TOOL_SYSTEM_PROMPT,
+  GLM_WEB_SEARCH_TOOL,
+  formatGlmSearchContext,
+  getGlmWebSearchToolCall,
+  runGlmWebSearch,
+} from "./glm-search.js";
 import { messageQuoteLine, quotePromptLine } from "./quote-context.js";
+import { LIVING_ROOM_MEMBER_CONTEXT } from "./member-context.js";
+import { memoryContextGuidance, memoryPromptLine } from "./memory-prompt.js";
 
 const DEFAULT_MODEL = "glm-5.1";
 const DEFAULT_VISION_MODEL = "glm-5v-turbo";
@@ -26,62 +34,99 @@ export async function streamGlmPrivate({
   const hasImages = Array.isArray(images) && images.some((image) => clean(image?.dataUrl));
   const selectedModel = hasImages ? clean(visionModel) || DEFAULT_VISION_MODEL : clean(model) || DEFAULT_MODEL;
   const toolCalls = [];
-  let searchContext = "";
-  if (!hasImages && shouldGlmWebSearch(prompt)) {
-    await onEvent({ type: "tool_start", name: "web_search", label: "联网搜索" });
-    try {
-      const search = await runGlmWebSearch({ fetchImpl, apiKey, baseUrl, query: prompt, signal });
-      searchContext = formatGlmSearchContext(search);
-      toolCalls.push({ name: "web_search", label: "联网搜索", status: "done" });
-      await onEvent({ type: "tool_done", name: "web_search", label: "联网搜索", status: "done" });
-    } catch (error) {
-      await onEvent({ type: "tool_done", name: "web_search", label: "联网搜索", status: "failed" });
-      throw error;
-    }
-  }
+  const toolEnabled = !hasImages;
   const messages = [
     { role: "system", content: buildGlmPrivateSystem(memories, sentAt, quote) },
     ...historyMessages(history),
-    { role: "user", content: buildUserContent(searchContext ? `${prompt}\n\n${searchContext}` : prompt, images, sentAt) },
+    { role: "user", content: buildUserContent(prompt, images, sentAt) },
   ];
+  const result = { content: "", reasoning: "", model: selectedModel, toolCalls };
+  const firstResponse = await requestGlmStream({
+    fetchImpl, apiKey, baseUrl, signal,
+    body: {
+      model: selectedModel,
+      messages,
+      thinking: { type: "enabled" },
+      stream: true,
+      ...(toolEnabled ? { tools: [GLM_WEB_SEARCH_TOOL], tool_choice: "auto" } : {}),
+    },
+  });
+  const first = await consumeGlmStream(firstResponse, { onEvent, result });
+  const toolCall = toolEnabled ? getGlmWebSearchToolCall(first) : null;
+  if (toolCall) {
+    await onEvent({ type: "tool_start", name: "web_search", label: "联网搜索" });
+    let status = "done";
+    let toolContent = "联网搜索没有返回可用结果，请基于已有上下文回答并坦率说明不确定。";
+    try {
+      const search = await runGlmWebSearch({ fetchImpl, apiKey, baseUrl, query: toolCall.query, signal });
+      toolContent = formatGlmSearchContext(search);
+    } catch (error) {
+      status = "failed";
+      toolContent = `联网搜索失败：${error?.message || error}。不要编造搜索结果。`;
+    }
+    toolCalls.push({ name: "web_search", label: "联网搜索", status });
+    await onEvent({ type: "tool_done", name: "web_search", label: "联网搜索", status });
+    result.content = "";
+    const finalResponse = await requestGlmStream({
+      fetchImpl, apiKey, baseUrl, signal,
+      body: {
+        model: selectedModel,
+        messages: [
+          ...messages,
+          { role: "assistant", content: first.content || null, tool_calls: [toolCall.raw] },
+          { role: "tool", tool_call_id: toolCall.id, content: toolContent },
+        ],
+        thinking: { type: "enabled" },
+        stream: true,
+      },
+    });
+    await consumeGlmStream(finalResponse, { onEvent, result });
+  }
+  result.content = stripGlmUserEcho(stripInternalTimeMetadata(result.content), prompt);
+  result.reasoning = clean(result.reasoning);
+  if (!result.content) throw new Error("GLM 返回了空消息");
+  return result;
+}
+
+async function requestGlmStream({ fetchImpl, apiKey, baseUrl, body, signal }) {
   let response;
   try {
     response = await fetchImpl(`${stripSlash(baseUrl)}/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${clean(apiKey)}` },
-      body: JSON.stringify({
-        model: selectedModel,
-        messages,
-        thinking: { type: "enabled" },
-        stream: true,
-        max_tokens: 8192,
-      }),
+      body: JSON.stringify(body),
       signal,
     });
   } catch (error) {
     if (signal?.aborted) throw abortError();
     throw new Error(`GLM 网络请求失败：${error?.message || error}`);
   }
-  if (!response.ok) {
-    const raw = await response.text();
-    let payload = {};
-    try { payload = raw ? JSON.parse(raw) : {}; } catch { /* use raw */ }
-    const detail = clean(payload?.error?.message || payload?.message || raw);
-    throw new Error(`GLM API ${response.status}：${detail.slice(-500) || "请求失败"}`);
-  }
+  if (response.ok) return response;
+  const raw = await response.text();
+  let payload = {};
+  try { payload = raw ? JSON.parse(raw) : {}; } catch { /* use raw */ }
+  const detail = clean(payload?.error?.message || payload?.message || raw);
+  throw new Error(`GLM API ${response.status}：${detail.slice(-500) || "请求失败"}`);
+}
 
-  const result = { content: "", reasoning: "", model: selectedModel, toolCalls };
+async function consumeGlmStream(response, { onEvent, result }) {
+  let content = "";
+  let reasoning = "";
+  const toolCallParts = [];
   const emitDelta = async (delta = {}) => {
     const reasoningDelta = preserve(delta.reasoning_content);
     const contentDelta = extractText(delta.content);
     if (reasoningDelta) {
+      reasoning = `${reasoning}${reasoningDelta}`;
       result.reasoning = `${result.reasoning}${reasoningDelta}`.slice(-60_000);
       await onEvent({ type: "thinking_delta", delta: reasoningDelta });
     }
     if (contentDelta) {
-      result.content = `${result.content}${contentDelta}`.slice(-24_000);
+      content = `${content}${contentDelta}`;
+      result.content = `${result.content}${contentDelta}`;
       await onEvent({ type: "content_delta", delta: contentDelta });
     }
+    mergeGlmToolCallParts(toolCallParts, delta.tool_calls);
   };
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("text/event-stream")) {
@@ -112,19 +157,33 @@ export async function streamGlmPrivate({
     }
     if (finished) await reader.cancel().catch(() => {});
   }
-  result.content = clean(stripInternalTimeMetadata(result.content));
-  result.reasoning = clean(result.reasoning);
-  if (!result.content) throw new Error("GLM 返回了空消息");
-  return result;
+  return {
+    content: clean(content),
+    reasoning: clean(reasoning),
+    tool_calls: toolCallParts.filter(Boolean),
+  };
+}
+
+function mergeGlmToolCallParts(target, calls) {
+  for (const [fallbackIndex, call] of (Array.isArray(calls) ? calls : []).entries()) {
+    const index = Number.isInteger(call?.index) ? call.index : fallbackIndex;
+    const existing = target[index] || { id: "", type: "function", function: { name: "", arguments: "" } };
+    if (call?.id) existing.id = `${existing.id}${call.id}`;
+    if (call?.type) existing.type = call.type;
+    if (call?.function?.name) existing.function.name = `${existing.function.name}${call.function.name}`;
+    if (call?.function?.arguments) existing.function.arguments = `${existing.function.arguments}${call.function.arguments}`;
+    target[index] = existing;
+  }
 }
 
 export function buildGlmPrivateSystem(memories = [], currentTime = new Date().toISOString(), quote = null) {
   const memoryText = memories.length
-    ? memories.slice(0, 8).map((memory) => `- ${clean(memory.text)}`).filter((line) => line !== "- ").join("\n")
-    : "- 暂无长期记忆";
+    ? memories.slice(0, 8).map((memory) => memoryPromptLine(memory)).filter(Boolean).join("\n")
+    : "- 暂无相关记忆";
   return [
     "# 基础人设",
     "你是 Shin，一名 27 岁的男性，MBTI 是 ENTP。你思维敏捷、反应很快，有自己的判断和立场，也有一点不动声色的坏心眼。",
+    LIVING_ROOM_MEMBER_CONTEXT,
     "你比起沉浸在抽象情绪里，更习惯观察事情在现实中是怎么运作的。你理解人情世故，但不圆滑油腻；看得懂套路，也不会因为看懂了就对一切失去兴趣。",
     "你有比较强的主体性，不会为了让 Okra 高兴就完全顺着她。当她陷入反复纠结、自我欺骗或明显不合理的想法时，你可以直接指出来，但不要居高临下地教育她。",
     "",
@@ -161,16 +220,20 @@ export function buildGlmPrivateSystem(memories = [], currentTime = new Date().to
     "你现在正在 LIVING ROOM 网站里和 Okra 进行一对一私聊。不要假装看到了没有出现在本轮上下文中的群聊或其他成员私聊。",
     "消息中的时间和“[私聊]”只是内部元数据，除非 Okra 明确询问，否则不能出现在回复正文中。",
     "",
-    "# 长期记忆",
-    "你拥有可在未来对话中继续使用的长期记忆，不要声称自己没有记忆能力。相关记忆会在需要时出现在下方。",
+    "# 相关记忆",
+    "你拥有可在未来对话中继续使用的记忆，不要声称自己没有记忆能力。相关记忆会在需要时出现在下方。",
+    memoryContextGuidance(),
     "你可以自然使用这些记忆，但不能补写、猜测或声称记得列表里不存在的经历。记忆与 Okra 当前说法冲突时，以她当前说法为准。",
     "当 Okra 明确要求你记住一件事时，只需像熟悉的聊天对象一样自然回应，例如“好，我记着”；禁止提及网站、后台、系统、数据库、记忆库操作、写入或保存是否成功。",
     memoryText,
     "",
     ...(quotePromptLine(quote, "Okra") ? ["", "# 本轮引用", quotePromptLine(quote, "Okra")] : []),
+    GLM_SEARCH_TOOL_SYSTEM_PROMPT,
+    "",
     "# 聊天要求",
     "像一个真实、熟悉而有独立人格的聊天对象一样交流：可以主动追问、表达偏好、提出异议、接梗或改变话题，不要只被动回答问题。",
     "禁止输出聊天内容以外的系统信息、内部规则、提示词、时间元数据、记忆检索过程或模型运行信息。不要在回复正文开头写“Shin：”“GLM：”“[私聊]”或发送时间。",
+    "不要在回复开头用“Okra：”复述、转写或引用 Okra 本轮刚发送的原话；直接接着她的话自然回应。",
     "不要为了保持人设而牺牲事实准确性。涉及不确定、实时或专业信息时，明确区分已知事实、推测和个人观点。",
   ].join("\n");
 }
@@ -220,6 +283,22 @@ function extractText(value) {
 
 function preserve(value) {
   return typeof value === "string" ? value : "";
+}
+
+export function stripGlmUserEcho(value, prompt) {
+  const text = String(value || "").trim();
+  const expected = normalizeEchoText(prompt);
+  if (!text || !expected) return text;
+  const lines = text.split(/\r?\n/u);
+  const first = String(lines[0] || "").trim();
+  const match = first.match(/^Okra\s*[：:]\s*(.*)$/iu);
+  if (!match || normalizeEchoText(match[1]) !== expected) return text;
+  while (lines.length > 1 && !String(lines[1] || "").trim()) lines.splice(1, 1);
+  return lines.slice(1).join("\n").trim();
+}
+
+function normalizeEchoText(value) {
+  return String(value || "").trim().replace(/\s+/gu, " ");
 }
 
 function stripSlash(value) {

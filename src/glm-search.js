@@ -1,17 +1,39 @@
-const EXPLICIT_SEARCH_PATTERN = /(?:^|[，。！？!?；;\n])\s*(?:请|帮我|麻烦你|你能|能不能|可以)?\s*(?:测试)?(?:搜索|搜一下|搜搜|查一下|查查|查找|联网搜索|联网查|联网搜|上网查|上网搜)(?:一下)?\s*[：:,，]?\s*\S+/iu;
-const LIVE_FACT_PATTERN = /(?:今天|现在|当前|最新|刚刚|最近|实时|本周|这周|明天|天气|气温|价格|金价|股价|汇率|票房|比分|赛果|热搜)/iu;
-const QUESTION_PATTERN = /(?:多少|什么|怎样|怎么样|如何|有没有|是不是|是否|哪里|哪家|哪部|谁|吗|呢|[？?])/iu;
+export const GLM_WEB_SEARCH_TOOL = {
+  type: "function",
+  function: {
+    name: "web_search",
+    description: "搜索互联网以核实实时、近期或当前对话中缺失的外部事实。不要用于闲聊、个人经历、关系讨论、情绪陪伴、创作，也不要仅因用户提到‘最近、今天、搜索’等词就调用。",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "只包含需要查询的外部事实，改写成简洁明确的搜索词，不要原样复制整段对话。" },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+};
 
-export function shouldGlmWebSearch(text) {
-  const value = clean(text).slice(-1_500);
-  return EXPLICIT_SEARCH_PATTERN.test(value)
-    || (LIVE_FACT_PATTERN.test(value) && QUESTION_PATTERN.test(value));
+export const GLM_SEARCH_TOOL_SYSTEM_PROMPT = [
+  "# 联网工具",
+  "你可以自行决定是否调用 web_search。先理解 Okra 此刻真正想聊什么，再决定是否需要外部资料。",
+  "只有回答确实依赖实时新闻、当前价格、天气、赛果、近期公开事件或你不确定且需要核实的外部事实时才搜索。",
+  "闲聊、个人经历、关系与情绪话题、对既有聊天内容的追问，以及仅仅出现‘最近、今天、搜索’等词时，直接根据上下文回答，不要搜索。",
+  "决定搜索时，把 query 改写成独立、简洁的检索词；禁止把用户整段消息原样当作 query。",
+].join("\n");
+
+export function getGlmWebSearchToolCall(message) {
+  const calls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+  const call = calls.find((item) => item?.function?.name === "web_search");
+  if (!call) return null;
+  let args = {};
+  try { args = JSON.parse(call.function?.arguments || "{}"); } catch { return null; }
+  const query = clean(args?.query).slice(0, 500);
+  return query ? { id: clean(call.id), query, raw: call } : null;
 }
 
 export function extractGlmSearchQuery(text) {
-  const value = clean(text).slice(-1_500);
-  const explicit = value.match(/(?:^|[，。！？!?；;\n])\s*(?:请|帮我|麻烦你|你能|能不能|可以)?\s*(?:测试)?(?:搜索|搜一下|搜搜|查一下|查查|查找|联网搜索|联网查|联网搜|上网查|上网搜)(?:一下)?\s*[：:,，]?\s*(\S[\s\S]*)$/iu);
-  return clean(explicit?.[1] || value).slice(0, 500);
+  return clean(text).slice(0, 500);
 }
 
 export async function runGlmWebSearch({

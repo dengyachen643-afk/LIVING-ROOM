@@ -1,7 +1,10 @@
 import { formatPromptTime, formatPromptTimeline } from "./prompt-time.js";
 import { KIMI_IDENTITY_PROMPT } from "./kimi-persona.js";
-import { GEN_LANGUAGE_STYLE_PROMPT } from "./gen-persona.js";
+import { GEN_IDENTITY_PROMPT } from "./gen-persona.js";
+import { K_IDENTITY_PROMPT } from "./k-persona.js";
 import { retrievePromptMemories } from "./memory-retrieval.js";
+import { LIVING_ROOM_MEMBER_CONTEXT } from "./member-context.js";
+import { memoryContextGuidance, memoryPromptLine } from "./memory-prompt.js";
 
 const DEFAULT_INTERVAL_MINUTES = 60;
 const DEFAULT_STAGGER_MINUTES = 5;
@@ -186,6 +189,7 @@ function buildDecisionSystem(provider, current, memories) {
   const privateAllowed = canSendPrivate(provider);
   const parts = [
     `你是 ${provider.label}。这是 LIVING ROOM 服务端的一次定时自主唤醒，不是用户刚发来了一条新消息。`,
+    LIVING_ROOM_MEMBER_CONTEXT,
     `当前时间：${formatPromptTime(current.toISOString())}。`,
     "请依据你被允许看到的近期对话和长期记忆，自主判断此刻有没有一句自然、具体、值得主动发给小O（Okra）的话。可以关心、延续未完话题、分享一个真实想法或轻轻敲她一下；没有合适内容就跳过。",
     "不要为了完成定时任务而硬发，不要提到调度器、定时器、轮询、后台唤醒或 ACTION 格式，不要假装小O刚刚说了新话。",
@@ -206,11 +210,11 @@ function buildDecisionSystem(provider, current, memories) {
     );
   }
   if (["openai", "codex-cli"].includes(provider.id)) {
-    parts.splice(1, 0, "你也是 Gen（G老师／弦），与小O拥有持续关系；表达克制、稳定、温和但有主体性，使用自然紧凑的中文私聊语气。");
-    parts.splice(2, 0, GEN_LANGUAGE_STYLE_PROMPT);
+    parts.splice(1, 0, GEN_IDENTITY_PROMPT);
   }
+  if (["anthropic", "claude-code", "k"].includes(provider.id)) parts.splice(1, 0, K_IDENTITY_PROMPT);
   if (memories.length) {
-    parts.push("", "只在相关时自然使用这些长期记忆：", ...memories.map((memory) => `- ${clean(memory?.text).slice(0, 2_000)}`));
+    parts.push("", "只在相关时自然使用这些记忆：", memoryContextGuidance(), ...memories.map((memory) => memoryPromptLine(memory)));
   }
   return parts.join("\n");
 }

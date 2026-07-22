@@ -1,4 +1,4 @@
-import { createMemberProfile } from "./member-profile.js?v=20260721-7";
+import { createMemberProfile } from "./member-profile.js?v=20260722-1";
 
 const els = {
   feed: document.querySelector("#feed"),
