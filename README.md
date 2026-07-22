@@ -4,23 +4,47 @@ LIVING ROOM 是一个可自托管的多模型私人社交空间。它把群聊�
 
 项目面向个人使用，采用 Node.js 原生 HTTP 服务、原生 HTML/CSS/JavaScript 和本地持久化；不依赖前端框架或外部数据库。默认只监听本机，API Key、聊天记录、原始记忆、上传图片和向量均保留在运行机器上。
 
-> 仓库中的 `Okra`、`Gen`、`Kimi`、`Shin`、`K` 是示例成员名和示例人格。复刻时可以修改对应 persona 与前端成员配置。运行数据绝不应提交到 Git。
+> 这是一个“机制参考实现”，不是一份应该原样复制的人设包。仓库中的人物名称、头像、地区、关系与 persona 只属于演示实例；新部署必须先换成部署者自己的成员设计。模型厂商、内部 Provider ID 与角色显示名是三件不同的事。
+
+## 部署前先创建自己的成员
+
+不要因为接入 Moonshot 就把成员叫作 Kimi，也不要因为使用 GLM、Codex CLI 或 Claude Code 就沿用本仓库里的角色名。建议先做一张自己的成员表：
+
+| 需要决定的内容 | 中性示例 | 说明 |
+| --- | --- | --- |
+| 用户显示名 | `Owner` | 网页和提示词里如何称呼部署者 |
+| 成员显示名 | `Aster`、`Mori`、`North` | 与模型厂商无关，应由部署者自行命名 |
+| 内部 Provider ID | `moonshot`、`glm`、`local-agent` | 只用于路由、API 和数据命名空间，可以不显示给用户 |
+| 模型入口 | Moonshot API、GLM API、Codex CLI | 负责生成能力，不等于角色身份 |
+| Persona | 年龄、表达方式、兴趣和关系边界 | 不应复制仓库作者的私人设定 |
+| 频道权限 | 私聊 / 群聊 / 主动消息 / 朋友圈 | 每个成员可以不同 |
+
+本仓库为了兼容已有运行数据，仍保留 `gen`、`kimi`、`glm`、`k` 等内部 ID；复刻者可以保留这些 ID，只修改显示名和 persona。若需要彻底更换 ID，应同时迁移 API 路由、记忆 namespace、前端频道键和测试。
+
+最少应检查并改写：
+
+- `public/index.html`、`public/app.js`、`public/member-profile.js`、`public/moments.js` 中的用户可见名称、地区和资料卡。
+- `src/*-persona.js`、`src/*-private.js`、`src/providers.js` 与朋友圈/主动消息提示词中的角色设定。
+- 记忆 namespace 与旧数据迁移映射；不要把演示实例的原始记忆导入新部署。
+- `test/` 中依赖显示名或内部 ID 的断言。
+
+下文出现的具体人物名只用于解释当前参考实现；部署步骤中的通用角色统一写作“成员 A / 成员 B / 本地代理”。运行数据绝不应提交到 Git。
 
 ## 功能概览
 
 | 模块 | 能力 |
 | --- | --- |
 | 多 AI 群聊 | 首轮并发处理；谁先完成谁先显示；成员可跳过、@ 其他成员、引用具体消息并继续有限回复链 |
-| 独立私聊 | Gen、Kimi、Shin 拥有独立聊天页、草稿、背景、搜索和未读状态 |
+| 独立私聊 | 可为任意成员开启独立聊天页、草稿、背景、搜索和未读状态 |
 | 连续上下文 | 每个成员能看到自己的私聊与群聊近期上下文，但不能看到其他成员私聊 |
 | 分层记忆 | 每人保留最近 30 轮并定期自我复盘；长期、自然淡出的短期、共享与事件记忆统一 RAG |
 | 长期聊天档案 | 前端窗口保持轻量，完整消息另存 SQLite，可按当前聊天搜索并加载更早记录 |
 | 主动推送 | 成员按各自时钟醒来，自行决定跳过、发私聊或发群聊；页面关闭也可继续 |
 | 朋友圈 | 用户与模型可发动态、图片、点赞、评论、回复指定评论；模型每天有随机候选时段并可选择不发 |
-| 多模态 | 用户上传图片；Kimi/GLM 可接收图片，GLM 自动切换视觉模型；上传图片压缩并存于服务器 |
-| 工具调用 | Kimi 支持 Moonshot Formula 工具循环；Shin 对明确的实时查询调用 GLM Web Search |
+| 多模态 | 用户上传图片；Moonshot/GLM 适配器可接收图片，GLM 自动切换视觉模型；上传图片压缩并存于服务器 |
+| 工具调用 | Moonshot 适配器支持 Formula 工具循环；GLM 适配器可对明确的实时查询调用 Web Search |
 | PWA 式手机体验 | 聊天列表、未读红点、长按复制/引用/本地删除、资料卡、自定义头像与背景、大图预览 |
-| Gen 干活模式 | 可让本机 Codex CLI 在服务器白名单工作区中修改文件；聊天模式保持只读 |
+| 本地代理干活模式 | 可让 Codex CLI 在服务器白名单工作区中修改文件；聊天模式保持只读 |
 
 ## 系统架构
 
@@ -35,7 +59,7 @@ flowchart LR
     Private --> Providers
     Proactive --> Providers
     Moments --> Providers
-    Providers --> Kimi["Moonshot API"]
+    Providers --> Moonshot["Moonshot API"]
     Providers --> GLM["智谱 API"]
     Providers --> OpenAI["OpenAI API / Codex CLI"]
     Providers --> Claude["Anthropic API / Claude Code"]
@@ -59,7 +83,7 @@ flowchart LR
 
 - Node.js 22 或更新版本。
 - 至少配置一个模型入口。
-- 如果使用 Gen：安装并登录官方 Codex CLI。
+- 如果使用本地 Codex 代理：安装并登录官方 Codex CLI。
 - 如果使用 Claude Code：安装并登录 Claude Code CLI。
 
 ### 2. 安装
@@ -80,7 +104,7 @@ npm ci
 cp .env.example .env
 ```
 
-编辑 `.env`，至少启用一个 Provider。例如只接入 Kimi：
+编辑 `.env`，至少启用一个 Provider。例如只接入 Moonshot：
 
 ```dotenv
 HOST=127.0.0.1
@@ -111,7 +135,9 @@ npm run dev
 
 所有配置项都可在 [.env.example](.env.example) 查看。没有 Key 的成员会显示为未连接，不影响其他成员运行。
 
-### Kimi / Moonshot
+### Moonshot 适配器
+
+参考实例把这个适配器对应的成员显示为 `Kimi`；新部署应为角色另取名字，环境变量中的 `KIMI_*` 只是当前代码的兼容键名。
 
 ```dotenv
 MOONSHOT_API_KEY=
@@ -123,17 +149,19 @@ KIMI_MEMORY_MODEL=moonshot-v1-8k
 KIMI_AUTO_MEMORY=true
 ```
 
-也可以在 Kimi 私聊页首次输入 Key。服务端把它写入 `KIMI_KEY_FILE`，以后手机和电脑共用；配置接口只返回“是否已配置”，不会返回 Key 原文。
+也可以在该适配器的私聊页首次输入 Key。服务端把它写入 `KIMI_KEY_FILE`，以后手机和电脑共用；配置接口只返回“是否已配置”，不会返回 Key 原文。
 
 当前策略：
 
-- Kimi 私聊和群聊关闭 K2.5 思考，以降低费用与等待时间。
+- 参考配置在私聊和群聊关闭 K2.5 思考，以降低费用与等待时间。
 - 朋友圈决策保留思考，因为它需要判断发不发、发什么以及是否配图。
 - `reasoning_content` 与正文分开处理，历史思考不会在下一轮重复发送。
-- 当前 Kimi 对话请求不强行发送 `temperature` / `top_p`；这两个配置主要用于兼容的记忆整理模型，避免对不接受该组合的推理模型造成空回复。
+- 当前 Moonshot 对话请求不强行发送 `temperature` / `top_p`；这两个配置主要用于兼容的记忆整理模型，避免对不接受该组合的推理模型造成空回复。
 - 开启工具后，服务端完成标准循环：模型返回 `tool_calls` → 服务端执行 Formula → 写入 `tool` 消息 → 再请求最终回复。不能把模型正文中的“（搜索……）”当成真实搜索。
 
-### Shin / GLM
+### GLM 适配器
+
+参考实例把这个适配器对应的成员显示为 `Shin`；它不是 GLM 部署的默认或推荐角色名。
 
 ```dotenv
 GLM_API_KEY=
@@ -154,9 +182,9 @@ GLM_MEMORY_MODEL=glm-5.1
 - 搜索结果先作为受控上下文交回模型，再由模型组织正文；朋友圈生成默认禁用聊天搜索，避免把原始搜索结果直接当成动态发布。
 - GLM 的 thinking 与 OpenAI 风格 `reasoning_effort` 不是同一个接口概念，不应同时假设二者都受支持。
 
-### Gen / Codex CLI
+### Codex CLI 本地代理
 
-Gen 可以复用本机已有的 ChatGPT/Codex 登录，不要求 OpenAI API Key：
+参考实例把本地代理显示为 `Gen`。新部署应自行命名；它可以复用本机已有的 ChatGPT/Codex 登录，不要求 OpenAI API Key：
 
 ```dotenv
 GEN_PRIVATE_ENABLED=true
@@ -207,7 +235,7 @@ Claude Code 群聊适配器使用无持久会话、无工具的单轮模式，�
 
 1. 服务端先保存用户消息并立即返回 accepted/read 状态。
 2. 所有选中的在线成员同时收到同一条新消息并开始生成。
-3. 谁先完成，谁的回复先保存并显示；不是固定先 Gen 后 Kimi。
+3. 谁先完成，谁的回复先保存并显示；不按成员名称或模型厂商规定固定顺序。
 4. 成员可以输出内部跳过标记，服务端不会把标记显示成消息。
 5. 首轮结束后，成员可以阅读本轮其他人的新回复，决定是否继续接话、引用或 @ 某人。
 6. 用户可以在 AI 接话期间继续输入；新消息会成为新的群聊上下文，而不是必须等待整条链结束。
@@ -215,10 +243,10 @@ Claude Code 群聊适配器使用无持久会话、无工具的单轮模式，�
 `@` 是重点邀请，不是排他路由。例如：
 
 ```text
-Okra：@Kimi 这部电影你怎么看？
+Owner：@成员A 这部电影你怎么看？
 ```
 
-Kimi 会被重点邀请，但其他在线成员仍可判断自己是否值得接话。AI 也可以写 `@Gen` 把问题继续交给 Gen。
+成员 A 会被重点邀请，但其他在线成员仍可判断自己是否值得接话。AI 也可以写 `@成员B` 把问题继续交给成员 B。
 
 防止无限聊天的服务端硬限制：
 
@@ -226,7 +254,7 @@ Kimi 会被重点邀请，但其他在线成员仍可判断自己是否值得接
 - 每位成员在同一条链最多发言 5 次。
 - 重复触发、重复正文与相同引用会被去重。
 - 跳过不消耗可见消息额度。
-- Gen 未被点名的环境式追答最多 1 次，避免 Codex 消耗失控。
+- 成本较高的本地代理未被点名时，环境式追答可单独限制为最多 1 次，避免额度消耗失控。
 - 单轮调用有超时和 AbortController；用户可以停止当前链。
 
 引用使用真实消息 ID。模型若要引用，输出内部指令 `[[QUOTE:消息ID]]`，服务端校验目标存在、不是自己发的消息，再转换为可见的完整原句引用；伪造 ID 会被丢弃。服务端仅保留 2000 字的异常保护上限，不再为了省 token 截成前 15 字。
@@ -235,12 +263,12 @@ Kimi 会被重点邀请，但其他在线成员仍可判断自己是否值得接
 
 聊天窗口在 UI 上分开，模型上下文按身份连续：
 
-| 成员 | 可见上下文 |
+| 通用成员类型 | 可见上下文 |
 | --- | --- |
-| Gen | Gen 私聊 + 群聊；不能看到 Kimi/Shin 私聊 |
-| Kimi | Kimi 私聊 + 群聊；不能看到 Gen/Shin 私聊 |
-| Shin | Shin 私聊 + 群聊；不能看到 Gen/Kimi 私聊 |
-| K | 群聊 |
+| 成员 A | 成员 A 私聊 + 群聊；不能看到其他成员私聊 |
+| 成员 B | 成员 B 私聊 + 群聊；不能看到其他成员私聊 |
+| 本地代理 | 本地代理私聊 + 群聊；不能看到其他成员私聊 |
+| 群聊限定成员 | 仅群聊 |
 
 系统提示词始终给出当前上海时间和英文星期，例如：
 
@@ -252,8 +280,8 @@ Kimi 会被重点邀请，但其他在线成员仍可判断自己是否值得接
 
 ```text
 [日期：2026-08-03 Mon]
-[09:18 私聊] Okra：今晚提醒我看电影。
-[09:20 群聊] Kimi：这部我看过。
+[09:18 私聊] Owner：今晚提醒我看电影。
+[09:20 群聊] 成员A：这部我看过。
 ```
 
 这样既保留“今天、昨天、星期几”的判断依据，也避免为每条历史重复日期、秒数和 UTC 描述。
@@ -262,7 +290,7 @@ Kimi 会被重点邀请，但其他在线成员仍可判断自己是否值得接
 
 - 群聊保留最近 60 条可见上下文。
 - 私聊使用各自受控的近期窗口。
-- Gen 遇到“刚才那个”“之前说过的”一类指代时，会从更早记录中按语义补取少量相关片段。
+- 成员遇到“刚才那个”“之前说过的”一类指代时，可以从更早记录中按语义补取少量相关片段。
 - 完整历史只用于网页搜索和人工回看，不会无限塞进模型提示词。
 
 ## 长期记忆机制
@@ -279,20 +307,20 @@ Kimi 会被重点邀请，但其他在线成员仍可判断自己是否值得接
 
 命名空间决定谁可以读取：
 
-| namespace | 所属成员 |
+| 当前内部 namespace | 通用含义 |
 | --- | --- |
-| `g` / 兼容旧 `gpt` | Gen |
-| `kimi` | Kimi |
-| `glm` | Shin |
-| `k` | K |
+| `g` / 兼容旧 `gpt` | 参考实例的本地代理；新部署可迁移为自己的成员 ID |
+| `kimi` | Moonshot 适配器对应成员的私有记忆 |
+| `glm` | GLM 适配器对应成员的私有记忆 |
+| `k` | 参考实例的预留成员；新部署通常应删除或更名 |
 | `shared` | 可被所有相关成员检索的公共事实 |
 
 ### 如何写入
 
 记忆动作分三种：`create`、`update`、`delete`。
 
-- Gen 在正常回复的同一次结构化生成中给出记忆动作，服务端校验后执行。
-- 明确说“记住、修改、忘记”时，Kimi 和 Shin 仍可立即运行一次原有记忆整理；普通聊天不再按几条一批额外调用，而是统一等待每 30 轮的本人复盘，减少重复费用。
+- 本地代理可在正常回复的同一次结构化生成中给出记忆动作，服务端校验后执行。
+- 用户明确说“记住、修改、忘记”时，API 模型成员仍可立即运行原有记忆整理；普通聊天不再按几条一批额外调用，而是统一等待每 30 轮的本人复盘，减少重复费用。
 - 群聊中的成员只维护自己的 namespace；公共事实可进入 `shared`。
 - 新建前会检索相近记忆。同一事实优先更新，而不是创建近义重复项。
 - 删除必须有用户当前明确的忘记/删除意图，模型不能自行清除长期事实。
@@ -306,11 +334,13 @@ Kimi 会被重点邀请，但其他在线成员仍可判断自己是否值得接
 
 适合保存为稳定偏好：
 
+下面沿用当前代码的兼容 namespace `kimi`；它不要求成员在界面上也叫 Kimi。若迁移内部 ID，需要同步修改检索路由。
+
 ```json
 {
   "namespace": "kimi",
   "text": "用户偏好低甜度咖啡，推荐饮品时避免特别甜的选项。",
-  "labels": ["preference", "food"],
+  "tags": ["preference", "food"],
   "importance": 4
 }
 ```
@@ -380,7 +410,7 @@ npm run reindex
 
 ### 人工记忆编辑与 Custom GPT
 
-- `/g-memory` 提供 Gen 记忆的搜索、新增、修改、删除和导出。
+- `/g-memory` 提供参考实例本地代理记忆的搜索、新增、修改、删除和导出；路径名为兼容旧数据而保留。
 - `GPT_MEMORY_TOKEN` 只授权 `g` / `gpt` 记忆接口，不授权聊天、其他成员记忆或模型 Key。
 - `/openapi.json` 可供私有 Custom GPT Action 使用。
 - 详细步骤见 [docs/CHATGPT_MEMORY_SETUP.md](docs/CHATGPT_MEMORY_SETUP.md)。
@@ -419,7 +449,7 @@ PROACTIVE_TIME_ZONE=Asia/Shanghai
 PROACTIVE_MAX_BACKOFF_MINUTES=360
 ```
 
-Kimi、Gen、Shin 可以选择自己的私聊或群聊；没有私聊入口的成员只能发群聊。模型没有合适内容时可以跳过。
+拥有私聊频道的成员可以选择发私聊或群聊；群聊限定成员只能发群聊。模型没有合适内容时可以跳过。
 
 ## 朋友圈机制
 
@@ -432,7 +462,7 @@ Kimi、Gen、Shin 可以选择自己的私聊或群聊；没有私聊入口的�
 - 点赞、评论、回复关系长期保留。回复具体评论时显示“成员 A 回复成员 B”。
 - 直接评论动态作者后，作者会在 10–120 分钟内获得回复任务；AI 之间也可以继续少量评论，但有链长、每日动作和单成员评论上限。
 - 每位 AI 的个性签名最多 15 字，首次自行生成，约两周复查一次是否更新。
-- 所有成员共用 GLM 图片生成通道；没有 GLM Key 时自动退化为纯文字动态。
+- 所有成员可以共用一个可配置的图片生成通道；参考实现使用 GLM，没有对应 Key 时自动退化为纯文字动态。
 
 配置：
 
@@ -487,11 +517,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\enable-remote-access.ps1 -Por
 ├─ state.json              # 最近消息、轮次账本、分层记忆、向量、UI 状态
 ├─ chat-history.sqlite     # 完整聊天档案
 ├─ moments.sqlite          # 朋友圈、评论、点赞、调度任务
-├─ kimi-api-key.txt        # 可选的服务端 Kimi Key
+├─ kimi-api-key.txt        # 当前 Moonshot 适配器的兼容 Key 文件名
 ├─ glm-api-key.txt         # 可选的服务端 GLM Key
 ├─ uploads/                # 用户图片、头像、背景
 ├─ models/                 # 本地 embedding 模型缓存
-└─ gen-runtime/            # Gen 临时运行目录
+└─ gen-runtime/            # 当前本地代理的兼容运行目录名
 ```
 
 这些路径全部被 `.gitignore` 排除。它们可能包含高度敏感数据。
@@ -542,14 +572,14 @@ git ls-files | Select-String -Pattern 'state.json|sqlite|uploads|\.env$|MEMORY'
 | `GET /api/sync` | 增量同步聊天与主动消息 |
 | `GET /api/history` | 搜索/加载长期聊天档案 |
 | `POST /api/chat` | 群聊流式入口 |
-| `POST /api/gen/chat` | Gen 私聊/干活入口 |
-| `POST /api/kimi/chat` | Kimi 私聊流式入口 |
-| `POST /api/glm/chat` | Shin 私聊流式入口 |
+| `POST /api/gen/chat` | 参考实例本地代理的私聊/干活入口（`gen` 是兼容 ID） |
+| `POST /api/kimi/chat` | Moonshot 成员私聊流式入口（`kimi` 是兼容 ID） |
+| `POST /api/glm/chat` | GLM 成员私聊流式入口（`glm` 是兼容 ID） |
 | `GET/POST/PATCH/DELETE /api/memories` | 记忆 CRUD 与混合搜索 |
 | `GET/POST /api/moments` | 朋友圈列表与发布 |
 | `POST /api/moments/:id/comments` | 评论或回复评论 |
 | `PUT /api/moments/:id/like` | 点赞状态 |
-| `GET /openapi.json` | 受限的 Gen 记忆 Action Schema |
+| `GET /openapi.json` | 受限的本地代理记忆 Action Schema |
 | `GET /api/health` | 健康检查 |
 
 私聊和群聊生成接口使用 NDJSON/SSE 风格增量事件；前端不应仅依赖当前连接判断任务是否完成，应同时通过 status/sync 接口恢复。
@@ -561,7 +591,7 @@ public/
   index.html, app.js, styles.css   聊天列表、群聊与私聊 UI
   moments.*                       朋友圈 UI
   member-profile.js, profile.css  成员资料卡、头像与签名
-  g-memory.*                      Gen 记忆编辑器
+  g-memory.*                      参考实例本地代理的记忆编辑器
 
 src/
   server.js                       HTTP 路由、鉴权、运行状态与流程整合
@@ -588,7 +618,7 @@ src/
 scripts/
   enable-remote-access.ps1        Tailscale Funnel 辅助脚本
   reindex-memories.js             重建记忆向量
-  import-g-memory.js              导入 Gen 记忆文件
+  import-g-memory.js              导入兼容 `g` namespace 的记忆文件
 
 test/                             单元与端到端 HTTP 测试
 docs/                             Custom GPT 记忆接入说明
@@ -621,7 +651,7 @@ docs/                             Custom GPT 记忆接入说明
 }
 ```
 
-然后补齐：成员命名空间、私聊频道（如果有）、persona、是否允许主动私聊、图片能力、thinking 配置、空回复恢复和测试。
+然后补齐：部署者自定义的显示名、成员命名空间、私聊频道（如果有）、persona、是否允许主动私聊、图片能力、thinking 配置、空回复恢复和测试。不要直接复制参考实例中的角色名、地区、头像或关系设定。
 
 ## 验证
 
