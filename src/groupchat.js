@@ -1,11 +1,16 @@
 import { formatPromptTime, formatPromptTimeline, stripInternalTimeMetadata } from "./prompt-time.js";
 import { KIMI_IDENTITY_PROMPT } from "./kimi-persona.js";
 import { messageQuoteLine, normalizeQuote } from "./quote-context.js";
-import { GEN_LANGUAGE_STYLE_PROMPT } from "./gen-persona.js";
+import { GEN_IDENTITY_PROMPT } from "./gen-persona.js";
+import { K_IDENTITY_PROMPT } from "./k-persona.js";
+import { LIVING_ROOM_MEMBER_CONTEXT } from "./member-context.js";
+import { memoryContextGuidance, memoryPromptLine } from "./memory-prompt.js";
 
 export const MAX_REPLIES_PER_MEMBER = 5;
 export const MAX_AMBIENT_GEN_REPLIES = 1;
 export const HARD_MAX_CHAIN_MESSAGES = 20;
+
+const KIMI_DUPLICATE_TTL_MS = 10 * 60 * 1000;
 
 const MAX_HISTORY_MESSAGES = 60;
 const MAX_TRANSCRIPT_CHARS = 30_000;
@@ -23,6 +28,7 @@ export async function runGroupChat(options) {
     autoRelay = true,
     maxMessages = HARD_MAX_CHAIN_MESSAGES,
     timeoutMs = 120_000,
+    dedupeRegistry,
     signal,
     onEvent = () => {},
   } = options;
@@ -36,7 +42,6 @@ export async function runGroupChat(options) {
   }
 
   const transcript = normalizeHistory(history);
-  const runStartIndex = transcript.length;
   const latestMessage = transcript.at(-1);
   if (!latestMessage || latestMessage.role !== "user") throw new Error("缺少用户消息");
 
@@ -60,6 +65,7 @@ export async function runGroupChat(options) {
   const turnsByProvider = new Map(members.map((member) => [member.id, 0]));
   const ambientTurnsByProvider = new Map(members.map((member) => [member.id, 0]));
   const seenTriggersByProvider = new Map(members.map((member) => [member.id, new Set()]));
+  const committedFingerprintsByProvider = new Map(members.map((member) => [member.id, new Set()]));
 
   await onEvent({
     type: "chat_start",
@@ -81,6 +87,7 @@ export async function runGroupChat(options) {
         maxMessages: safeMaxMessages,
         triggeredBy: task.triggerAuthor,
       });
+      const triggerMessage = transcript.find((message) => message.id === task.triggerMessageId);
       const text = await provider.generate({
         system: buildSystemPrompt(
           provider,
@@ -108,20 +115,29 @@ export async function runGroupChat(options) {
       }
       const rawContent = String(text || "").trim();
       const cleanedContent = ["kimi", "glm"].includes(provider.id) ? stripInternalTimeMetadata(rawContent) : rawContent;
-      const quotedReply = parseQuotedReply(cleanedContent, transcript, provider.id);
+      const parsedQuotedReply = parseQuotedReply(cleanedContent, transcript, provider.id);
+      const quotedReply = applyQuotePolicy(parsedQuotedReply, transcript, provider.id, task.triggerMessageId);
       const content = quotedReply.content;
       if (isSkippedReply(content)) {
-        await onEvent({ type: "speaker_skip", provider: publicProvider(provider), triggeredBy: task.triggerAuthor });
+        await onEvent({
+          type: "speaker_skip",
+          provider: publicProvider(provider),
+          triggeredBy: task.triggerAuthor,
+          trigger: publicTrigger(triggerMessage, task),
+        });
         return;
       }
       if (!content) throw new Error(`${provider.label} 返回了空消息`);
       const replyTargetId = quotedReply.quote?.messageId || task.triggerMessageId;
-      const duplicate = transcript.slice(runStartIndex).some((message) => (
-        message.role === "assistant"
-        && message.providerId === provider.id
-        && message.replyToId === replyTargetId
-        && normalizeDuplicateContent(message.content) === normalizeDuplicateContent(content)
-      ));
+      const normalizedContent = normalizeDuplicateContent(content);
+      const fingerprint = duplicateFingerprint(provider.id, normalizedContent, replyTargetId);
+      const duplicateInRun = committedFingerprintsByProvider.get(provider.id)?.has(fingerprint);
+      const substantialKimiReply = provider.id === "kimi" && normalizedContent.length >= 16;
+      const duplicateInRecentHistory = substantialKimiReply && hasRecentKimiDuplicate(transcript, normalizedContent);
+      const duplicateAcrossRuns = substantialKimiReply
+        && dedupeRegistry
+        && !dedupeRegistry.reserve(provider.id, normalizedContent);
+      const duplicate = duplicateInRun || duplicateInRecentHistory || duplicateAcrossRuns;
       if (duplicate) {
         turnsByProvider.set(provider.id, MAX_REPLIES_PER_MEMBER);
         await onEvent({
@@ -129,6 +145,7 @@ export async function runGroupChat(options) {
           provider: publicProvider(provider),
           triggeredBy: task.triggerAuthor,
           reason: "duplicate",
+          trigger: publicTrigger(triggerMessage, task),
         });
         return;
       }
@@ -136,9 +153,6 @@ export async function runGroupChat(options) {
       const mentionedIds = mentions.hasEveryone
         ? members.map((member) => member.id).filter((id) => id !== provider.id)
         : mentions.ids.filter((id) => id !== provider.id);
-      if (quotedReply.targetProviderId && !mentionedIds.includes(quotedReply.targetProviderId)) {
-        mentionedIds.push(quotedReply.targetProviderId);
-      }
       const message = {
         id: makeId(),
         role: "assistant",
@@ -153,9 +167,13 @@ export async function runGroupChat(options) {
         createdAt: new Date().toISOString(),
       };
       transcript.push(message);
+      committedFingerprintsByProvider.get(provider.id)?.add(fingerprint);
       trimHistoryInPlace(transcript);
       completedMessages += 1;
-      await onEvent({ type: "message", message, messageNumber, maxMessages: safeMaxMessages });
+      await onEvent({
+        type: "message", message, messageNumber, maxMessages: safeMaxMessages,
+        trigger: publicTrigger(triggerMessage, task),
+      });
 
       if (autoRelay) {
         const pendingIds = new Set(queue.map((item) => item.providerId));
@@ -251,6 +269,29 @@ export async function runGroupChat(options) {
   return result;
 }
 
+export function createGroupDedupeRegistry({ ttlMs = KIMI_DUPLICATE_TTL_MS, now = () => Date.now() } = {}) {
+  const entries = new Map();
+  const safeTtlMs = Math.max(1_000, Number(ttlMs) || KIMI_DUPLICATE_TTL_MS);
+  const prune = (timestamp) => {
+    for (const [key, expiresAt] of entries) {
+      if (expiresAt <= timestamp) entries.delete(key);
+    }
+  };
+  return {
+    reserve(providerId, content) {
+      const timestamp = now();
+      prune(timestamp);
+      const key = `${String(providerId || "")}\u0000${normalizeDuplicateContent(content)}`;
+      if (entries.has(key)) return false;
+      entries.set(key, timestamp + safeTtlMs);
+      return true;
+    },
+    clear() {
+      entries.clear();
+    },
+  };
+}
+
 function isAmbientGenTask(task, provider) {
   return task?.sourceProviderId === "room" && isGenProvider(provider);
 }
@@ -299,6 +340,29 @@ export function parseQuotedReply(value, history = [], providerId = "") {
   return { content, quote, targetProviderId };
 }
 
+export function applyQuotePolicy(parsedReply, history = [], providerId = "", triggerMessageId = "") {
+  const reply = {
+    content: String(parsedReply?.content || "").trim(),
+    quote: parsedReply?.quote || null,
+    targetProviderId: String(parsedReply?.targetProviderId || ""),
+  };
+  if (providerId !== "kimi" || !reply.quote) return reply;
+
+  const recentKimiReplies = (Array.isArray(history) ? history : [])
+    .filter((message) => message?.role === "assistant" && String(message?.providerId || "") === "kimi")
+    .slice(-20);
+  const quotedTooRecently = recentKimiReplies.slice(-2).some((message) => message?.quote?.messageId);
+  const repeatedTarget = recentKimiReplies.some((message) => (
+    String(message?.quote?.messageId || "") === String(reply.quote?.messageId || "")
+  ));
+  const directlyRepliesToTrigger = String(reply.quote?.messageId || "") === String(triggerMessageId || "");
+
+  if (directlyRepliesToTrigger || quotedTooRecently || repeatedTarget) {
+    return { ...reply, quote: null, targetProviderId: "" };
+  }
+  return reply;
+}
+
 function providerAliases(provider) {
   const aliases = [provider.id, provider.label];
   if (provider.id === "openai") aliases.push("GPT", "ChatGPT", "Gen", "G老师");
@@ -314,6 +378,7 @@ function buildSystemPrompt(provider, members, memories = [], currentTime = new D
   const memberNames = members.map((member) => `@${member.label}`).join("、");
   const parts = [
     `你是群聊成员 ${provider.label}，正在一个类似微信群或 Telegram 群的私人聊天室里。`,
+    LIVING_ROOM_MEMBER_CONTEXT,
     `当前时间：${formatPromptTime(currentTime)}。涉及“刚才、今天、昨天、多久”等时间关系时，以群消息的发送时间为准。`,
     "这是用户的私人小群。像真实群友一样阅读最新发言并自行决定是否接话：亲近、有性格、有生活感，但不要擅自假定恋爱或亲属关系。",
     "不要像客服、专家面板或会议纪要。少一点格式化总结，多一点自然反应、关心、玩笑、追问和真实观点。",
@@ -331,8 +396,8 @@ function buildSystemPrompt(provider, members, memories = [], currentTime = new D
     parts.push("场景提示：你现在在 LIVING ROOM 群聊中；你记得自己与 okra 的一对一私聊，但私聊内容只属于你，除非 okra 主动在群里提起，否则不要向其他成员泄露。");
   }
   if (["openai", "codex-cli"].includes(provider.id)) {
+    parts.splice(1, 0, GEN_IDENTITY_PROMPT);
     parts.push("场景提示：你现在以 Gen 的身份在 LIVING ROOM 群聊中；你也记得自己与小O（okra）的一对一私聊，但私聊内容只属于你，除非小O主动在群里提起，否则不要向其他成员泄露。不要把 Kimi、K 或其他成员说过的话当成自己说过。");
-    parts.push(GEN_LANGUAGE_STYLE_PROMPT);
   }
   if (provider.id === "glm") {
     parts.splice(1, 0,
@@ -344,8 +409,11 @@ function buildSystemPrompt(provider, members, memories = [], currentTime = new D
     parts.push("场景提示：你现在在 LIVING ROOM 群聊中；你也记得自己与 Okra 的一对一私聊，但私聊只属于你们，除非 Okra 主动在群里提起，否则不能泄露。不要把 Gen、Kimi、K 或其他成员的话当成自己说过。");
     parts.push("时间、[私聊]、[群聊] 等都是内部元数据，不能出现在回复正文中；不要在正文开头写“Shin：”或“GLM：”。");
   }
+  if (["anthropic", "claude-code", "k"].includes(provider.id)) {
+    parts.splice(1, 0, K_IDENTITY_PROMPT);
+  }
   const memoryText = serializeMemories(memories);
-  if (memoryText) parts.push("", "以下是群聊共用的长期记忆，仅在相关时自然使用：", memoryText);
+  if (memoryText) parts.push("", "以下是本轮相关记忆，仅在相关时自然使用：", memoryContextGuidance(), memoryText);
   return parts.join("\n");
 }
 
@@ -375,15 +443,15 @@ function buildMessagePrompt(provider, history, task, messageNumber, maxMessages,
     "最近群聊记录：",
     serializeHistory(history) || "（暂无历史）",
     "",
-    "如果引用 Okra 或其他成员的一条既有消息能让回复对象更清楚，可以在回复第一行输出 [[QUOTE:消息ID]]，第二行再写正常回复。消息ID必须逐字取自上面的群聊记录，不能编造；不要引用自己的消息；一次最多引用一条；不需要引用时不要输出该标记。这个标记是内部指令，不要解释它。",
+    "默认不要引用消息。直接承接当前触发你回复的最新一句时，界面已经会显示回复对象，不需要再引用。只有在你要回应更早的一句话，或同时存在多条话题、不引用就会产生歧义时，才可以在第一行输出 [[QUOTE:消息ID]]，第二行再写正常回复。消息ID必须逐字取自上面的群聊记录，不能编造；不要引用自己的消息；一次最多引用一条。引用本身不会邀请对方继续回复；确实需要对方接话时必须另外明确 @ 对方。这个标记是内部指令，不要解释它。",
     "",
     `现在以 ${provider.label} 的身份决定是否发送一条群消息。若不发言，只输出 ${SKIP_REPLY_TOKEN}。`,
   ];
-  if (["kimi", "glm", "openai", "codex-cli"].includes(provider.id)) {
+  if (["kimi", "glm", "openai", "codex-cli", "anthropic", "claude-code", "k"].includes(provider.id)) {
     const privateText = serializePrivateContext(privateContext, provider.label);
     if (privateText) parts.splice(-1, 0,
       "",
-      "下面是只有你能看到的近期私聊上下文。它帮助你保持连续性，但不能作为群内其他成员已经知道这些内容的依据：",
+      "下面是你自己最近 30 个互动轮次中的上下文，跨越群聊和 P2P 私聊。它帮助你保持连续性；其中的私聊内容不能作为其他群成员已经知道这些内容的依据：",
       privateText,
       "",
     );
@@ -400,12 +468,27 @@ function normalizeDuplicateContent(value) {
   return String(value || "").trim().replace(/\s+/gu, " ");
 }
 
+function duplicateFingerprint(providerId, normalizedContent, replyTargetId) {
+  return providerId === "kimi"
+    ? normalizedContent
+    : `${String(replyTargetId || "")}\u0000${normalizedContent}`;
+}
+
+function hasRecentKimiDuplicate(history, normalizedContent, now = Date.now()) {
+  return (Array.isArray(history) ? history : []).slice(-30).some((message) => {
+    if (message?.role !== "assistant" || String(message?.providerId || "") !== "kimi") return false;
+    if (normalizeDuplicateContent(message.content) !== normalizedContent) return false;
+    const createdAt = Date.parse(String(message.createdAt || ""));
+    return Number.isFinite(createdAt) && now - createdAt >= 0 && now - createdAt <= KIMI_DUPLICATE_TTL_MS;
+  });
+}
+
 function serializeMemories(memories) {
   const lines = (Array.isArray(memories) ? memories : [])
     .slice(0, 8)
-    .map((item) => String(item?.text || item || "").trim().slice(0, 600))
+    .map((item) => memoryPromptLine(typeof item === "string" ? { text: item } : item).slice(0, 700))
     .filter(Boolean)
-    .map((text) => `- ${text}`);
+    ;
   let value = lines.join("\n");
   if (value.length > 1_200) value = value.slice(0, 1_200);
   return value;
@@ -424,9 +507,20 @@ function serializePrivateContext(history, fallbackAuthor = "聊天成员") {
     const content = String(message?.content || "").trim() || (message?.attachments?.length ? "（发送了一张或多张图片）" : "");
     if (!content) return "";
     const author = message?.role === "user" ? "okra" : (message?.author || fallbackAuthor);
-    return [messageQuoteLine(message), `[${clock} 私聊] ${author}：${content}`].filter(Boolean).join("\n");
+    const scene = message?.channel === "group" ? "群聊" : "P2P私聊";
+    return [messageQuoteLine(message), `[${clock} ${scene}] ${author}：${content}`].filter(Boolean).join("\n");
   });
   return text.length > 10_000 ? `（较早私聊已截断）\n${text.slice(-10_000)}` : text;
+}
+
+function publicTrigger(message, task) {
+  return {
+    id: String(message?.id || task?.triggerMessageId || ""),
+    author: String(message?.role === "user" ? "Okra" : (message?.author || task?.triggerAuthor || "Okra")),
+    content: String(message?.content || ""),
+    attachments: Array.isArray(message?.attachments) ? message.attachments.slice(0, 4) : [],
+    createdAt: String(message?.createdAt || ""),
+  };
 }
 
 function normalizeHistory(history) {

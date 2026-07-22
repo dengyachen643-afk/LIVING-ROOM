@@ -1,5 +1,12 @@
 import { spawn } from "node:child_process";
-import { formatGlmSearchContext, runGlmWebSearch, shouldGlmWebSearch } from "./glm-search.js";
+import {
+  GLM_SEARCH_TOOL_SYSTEM_PROMPT,
+  GLM_WEB_SEARCH_TOOL,
+  formatGlmSearchContext,
+  getGlmWebSearchToolCall,
+  runGlmWebSearch,
+} from "./glm-search.js";
+import { stripGlmUserEcho } from "./glm-private.js";
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 1600;
 const MAX_CAPTURE_CHARS = 1_000_000;
@@ -37,7 +44,6 @@ function createOpenAIProvider(env, fetchImpl, maxOutputTokens) {
         model,
         instructions: system,
         input: prompt,
-        max_output_tokens: maxOutputTokens,
       };
       const effort = clean(env.OPENAI_REASONING_EFFORT);
       if (effort) body.reasoning = { effort };
@@ -99,28 +105,46 @@ function createGlmProvider(env, fetchImpl, maxOutputTokens) {
     unavailableReason: apiKey ? "" : "缺少 GLM_API_KEY",
     async generate({ system, prompt, signal, images = [], searchText = "", allowWebSearch = true }) {
       const hasImages = Array.isArray(images) && images.length > 0;
-      const searchSource = clean(searchText) || clean(prompt);
-      let groundedPrompt = prompt;
-      if (allowWebSearch !== false && !hasImages && shouldGlmWebSearch(searchSource)) {
-        const search = await runGlmWebSearch({ fetchImpl, apiKey, baseUrl, query: searchSource, signal });
-        groundedPrompt = `${prompt}\n\n${formatGlmSearchContext(search)}`;
-      }
       const userContent = hasImages ? [
         ...images.slice(0, 4).map((image) => ({ type: "image_url", image_url: { url: image.dataUrl } })),
         { type: "text", text: prompt || "请看这张图片。" },
-      ] : groundedPrompt;
-      const requestBody = {
+      ] : prompt;
+      const toolEnabled = allowWebSearch !== false && !hasImages;
+      const baseMessages = [
+        { role: "system", content: toolEnabled ? `${system}\n\n${GLM_SEARCH_TOOL_SYSTEM_PROMPT}` : system },
+        { role: "user", content: userContent },
+      ];
+      let requestBody = {
         model: hasImages ? visionModel : model,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: userContent },
-        ],
+        messages: baseMessages,
         thinking: { type: "enabled" },
-        max_tokens: Math.max(4096, maxOutputTokens),
+        ...(toolEnabled ? { tools: [GLM_WEB_SEARCH_TOOL], tool_choice: "auto" } : {}),
       };
       let payload = await postJson(fetchImpl, `${baseUrl}/chat/completions`, {
         Authorization: `Bearer ${apiKey}`,
       }, requestBody, signal, "GLM");
+      const toolCall = toolEnabled ? getGlmWebSearchToolCall(payload?.choices?.[0]?.message) : null;
+      if (toolCall) {
+        let toolContent = "联网搜索没有返回可用结果，请基于已有上下文回答并坦率说明不确定。";
+        try {
+          const search = await runGlmWebSearch({ fetchImpl, apiKey, baseUrl, query: toolCall.query, signal });
+          toolContent = formatGlmSearchContext(search);
+        } catch (error) {
+          toolContent = `联网搜索失败：${error?.message || error}。不要编造搜索结果。`;
+        }
+        requestBody = {
+          model,
+          messages: [
+            ...baseMessages,
+            { role: "assistant", content: null, tool_calls: [toolCall.raw] },
+            { role: "tool", tool_call_id: toolCall.id, content: toolContent },
+          ],
+          thinking: { type: "enabled" },
+        };
+        payload = await postJson(fetchImpl, `${baseUrl}/chat/completions`, {
+          Authorization: `Bearer ${apiKey}`,
+        }, requestBody, signal, "GLM");
+      }
       let text = payload?.choices?.[0]?.message?.content;
       if (!clean(text) && clean(payload?.choices?.[0]?.message?.reasoning_content)) {
         payload = await postJson(fetchImpl, `${baseUrl}/chat/completions`, {
@@ -128,12 +152,11 @@ function createGlmProvider(env, fetchImpl, maxOutputTokens) {
         }, {
           ...requestBody,
           thinking: { type: "disabled" },
-          max_tokens: Math.max(1200, maxOutputTokens),
         }, signal, "GLM");
         text = payload?.choices?.[0]?.message?.content;
       }
       if (!clean(text)) throw new Error("GLM 返回了空消息");
-      return clean(text);
+      return stripGlmUserEcho(clean(text), searchText);
     },
   };
 }

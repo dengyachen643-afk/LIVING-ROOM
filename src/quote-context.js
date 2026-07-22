@@ -21,7 +21,7 @@ export function messageQuoteLine(message) {
 
 function truncateQuote(value) {
   const text = clean(value).replace(/\s+/gu, " ");
-  return [...text].slice(0, 15).join("");
+  return [...text].slice(0, 2_000).join("");
 }
 
 function normalizeQuoteAuthor(value) {

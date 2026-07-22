@@ -5,6 +5,8 @@ import {
   HARD_MAX_CHAIN_MESSAGES,
   MAX_AMBIENT_GEN_REPLIES,
   MAX_REPLIES_PER_MEMBER,
+  applyQuotePolicy,
+  createGroupDedupeRegistry,
   parseQuotedReply,
   runGroupChat,
 } from "../src/groupchat.js";
@@ -32,7 +34,7 @@ test("AI quote directives bind to a real visible message", () => {
   assert.deepEqual(result.quote, {
     messageId: "g1",
     author: "Gen",
-    text: "Gen's earlier t",
+    text: "Gen's earlier thought.",
   });
   assert.equal(result.targetProviderId, "openai");
 });
@@ -49,11 +51,46 @@ test("AI quote directives cannot invent targets or quote their own messages", ()
   });
 });
 
-test("an AI group reply can visibly quote Okra by message ID", async () => {
+test("Kimi omits redundant direct quotes and observes a quote cooldown", () => {
+  const parsed = {
+    content: "我接着说。",
+    quote: { messageId: "g1", author: "Gen", text: "前一句" },
+    targetProviderId: "openai",
+  };
+  assert.deepEqual(applyQuotePolicy(parsed, [], "kimi", "g1"), {
+    content: "我接着说。", quote: null, targetProviderId: "",
+  });
+
+  const history = [
+    { id: "k1", role: "assistant", providerId: "kimi", content: "之前引用过。", quote: { messageId: "u0" } },
+    { id: "g2", role: "assistant", providerId: "openai", content: "另一句。" },
+  ];
+  assert.deepEqual(applyQuotePolicy(parsed, history, "kimi", "g2"), {
+    content: "我接着说。", quote: null, targetProviderId: "",
+  });
+  assert.equal(applyQuotePolicy(parsed, history, "glm", "g2").quote?.messageId, "g1");
+});
+
+test("Kimi may quote an older unambiguous target after two quote-free replies", () => {
+  const parsed = {
+    content: "回到刚才那句。",
+    quote: { messageId: "g1", author: "Gen", text: "较早的话" },
+    targetProviderId: "openai",
+  };
+  const history = [
+    { id: "k0", role: "assistant", providerId: "kimi", content: "更早引用。", quote: { messageId: "u0" } },
+    { id: "k1", role: "assistant", providerId: "kimi", content: "第一条普通回复。" },
+    { id: "k2", role: "assistant", providerId: "kimi", content: "第二条普通回复。" },
+    { id: "g2", role: "assistant", providerId: "openai", content: "最新一句。" },
+  ];
+  assert.equal(applyQuotePolicy(parsed, history, "kimi", "g2").quote?.messageId, "g1");
+});
+
+test("a non-Kimi AI group reply can visibly quote Okra by message ID", async () => {
   const messages = [];
   let prompt = "";
   const provider = {
-    ...fakeProvider("kimi", "Kimi"),
+    ...fakeProvider("glm", "Shin"),
     async generate(input) {
       prompt = input.prompt;
       return "[[QUOTE:u1]]\nI am replying to this line.";
@@ -61,7 +98,7 @@ test("an AI group reply can visibly quote Okra by message ID", async () => {
   };
   await runGroupChat({
     providers: [provider],
-    participantIds: ["kimi"],
+    participantIds: ["glm"],
     history: [{ ...userMessage("A line worth quoting."), createdAt: "2026-07-21T00:00:00.000Z" }],
     autoRelay: false,
     onEvent: (event) => { if (event.type === "message") messages.push(event.message); },
@@ -74,7 +111,7 @@ test("an AI group reply can visibly quote Okra by message ID", async () => {
   assert.deepEqual(messages[0].quote, {
     messageId: "u1",
     author: "Okra",
-    text: "A line worth qu",
+    text: "A line worth quoting.",
   });
 });
 
@@ -298,6 +335,83 @@ test("an identical reply to the same quoted message is posted only once", async 
   assert.equal(skipped.some((event) => event.provider.id === "kimi" && event.reason === "duplicate"), true);
 });
 
+test("Kimi cannot repeat identical content for a different reply target in one chain", async () => {
+  const messages = [];
+  const skipped = [];
+  let kimiCalls = 0;
+  let genCalls = 0;
+  const providers = [
+    {
+      ...fakeProvider("kimi", "Kimi"),
+      async generate() {
+        kimiCalls += 1;
+        return "……只告诉 Shin。今天说好了不碰服务器。";
+      },
+    },
+    {
+      ...fakeProvider("openai", "Gen"),
+      async generate() {
+        genCalls += 1;
+        return genCalls === 1 ? "我补一句。" : "[[SKIP_REPLY]]";
+      },
+    },
+  ];
+  await runGroupChat({
+    providers,
+    participantIds: ["kimi", "openai"],
+    history: [userMessage("好好上班")],
+    onEvent: (event) => {
+      if (event.type === "message") messages.push(event.message);
+      if (event.type === "speaker_skip") skipped.push(event);
+    },
+  });
+  assert.equal(kimiCalls, 2);
+  assert.equal(messages.filter((message) => message.providerId === "kimi").length, 1);
+  assert.equal(skipped.some((event) => event.provider.id === "kimi" && event.reason === "duplicate"), true);
+});
+
+test("Kimi deduplication still works after the bounded transcript trims old history", async () => {
+  const messages = [];
+  let kimiCalls = 0;
+  let genCalls = 0;
+  const history = Array.from({ length: 59 }, (_, index) => ({
+    id: `old-${index}`,
+    role: index % 2 ? "assistant" : "user",
+    providerId: index % 2 ? "glm" : "",
+    author: index % 2 ? "Shin" : "Okra",
+    content: `old message ${index}`,
+    createdAt: "2026-07-20T00:00:00.000Z",
+  }));
+  history.push({ ...userMessage("新消息"), id: "latest-user" });
+  await runGroupChat({
+    providers: [
+      { ...fakeProvider("kimi", "Kimi"), async generate() { kimiCalls += 1; return "完全相同的回复"; } },
+      { ...fakeProvider("openai", "Gen"), async generate() { genCalls += 1; return genCalls === 1 ? "我接一句" : "[[SKIP_REPLY]]"; } },
+    ],
+    participantIds: ["kimi", "openai"],
+    history,
+    onEvent: (event) => { if (event.type === "message") messages.push(event.message); },
+  });
+  assert.equal(kimiCalls, 2);
+  assert.equal(messages.filter((message) => message.providerId === "kimi").length, 1);
+});
+
+test("shared Kimi dedupe registry blocks identical replies from overlapping chat runs", async () => {
+  const registry = createGroupDedupeRegistry();
+  const messages = [];
+  const provider = fakeProvider("kimi", "Kimi", "并行轮次里面出现了一段完全相同而且足够长的回复");
+  const run = (id) => runGroupChat({
+    providers: [provider],
+    participantIds: ["kimi"],
+    history: [{ ...userMessage(`message ${id}`), id }],
+    dedupeRegistry: registry,
+    autoRelay: false,
+    onEvent: (event) => { if (event.type === "message") messages.push(event.message); },
+  });
+  await Promise.all([run("u-overlap-1"), run("u-overlap-2")]);
+  assert.equal(messages.length, 1);
+});
+
 test("a skipped call does not consume the visible group-message budget", async () => {
   let kimiCalls = 0;
   const result = await runGroupChat({
@@ -454,9 +568,11 @@ test("Gen is asked for at most one unmentioned ambient follow-up", async () => {
 });
 
 test("repeated AI-to-AI mentions can continue until the total visible-message limit", async () => {
+  let gptCalls = 0;
+  let kimiCalls = 0;
   const providers = [
-    fakeProvider("openai", "GPT", "@Kimi 接一下"),
-    fakeProvider("kimi", "Kimi", "@GPT 再补充"),
+    fakeProvider("openai", "GPT", () => `@Kimi 接一下 ${++gptCalls}`),
+    fakeProvider("kimi", "Kimi", () => `@GPT 再补充 ${++kimiCalls}`),
   ];
   const result = await runGroupChat({
     providers,
@@ -474,10 +590,13 @@ test("repeated AI-to-AI mentions can continue until the total visible-message li
 });
 
 test("every selected group member can still participate in five directly addressed rounds", async () => {
+  let genCalls = 0;
+  let kimiCalls = 0;
+  let shinCalls = 0;
   const providers = [
-    fakeProvider("openai", "Gen", "@Kimi @Shin 继续"),
-    fakeProvider("kimi", "Kimi", "@Gen @Shin 继续"),
-    fakeProvider("glm", "Shin", "@Gen @Kimi 继续"),
+    fakeProvider("openai", "Gen", () => `@Kimi @Shin 继续 ${++genCalls}`),
+    fakeProvider("kimi", "Kimi", () => `@Gen @Shin 继续 ${++kimiCalls}`),
+    fakeProvider("glm", "Shin", () => `@Gen @Kimi 继续 ${++shinCalls}`),
   ];
   const result = await runGroupChat({
     providers,

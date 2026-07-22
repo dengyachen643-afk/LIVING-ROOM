@@ -1,7 +1,9 @@
 import { toolLabel } from "./kimi-tools.js";
 import { KIMI_IDENTITY_PROMPT } from "./kimi-persona.js";
+import { LIVING_ROOM_MEMBER_CONTEXT } from "./member-context.js";
 import { formatPromptClock, formatPromptDay, formatPromptTime, stripInternalTimeMetadata } from "./prompt-time.js";
 import { messageQuoteLine, quotePromptLine } from "./quote-context.js";
+import { memoryContextGuidance, memoryPromptLine } from "./memory-prompt.js";
 
 const DEFAULT_MODEL = "kimi-k2.5";
 const DEFAULT_BASE_URL = "https://api.moonshot.cn/v1";
@@ -223,10 +225,11 @@ function mergeToolCallDeltas(target, deltas) {
 
 export function buildKimiPrivateSystem(memories = [], currentTime = new Date().toISOString(), quote = null) {
   const memoryText = memories.length
-    ? memories.slice(0, 8).map((memory) => `- ${clean(memory.text)}`).filter((line) => line !== "- ").join("\n")
-    : "- 暂无长期记忆";
+    ? memories.slice(0, 8).map((memory) => memoryPromptLine(memory)).filter(Boolean).join("\n")
+    : "- 暂无相关记忆";
   return [
     KIMI_IDENTITY_PROMPT,
+    LIVING_ROOM_MEMBER_CONTEXT,
     "",
     "# 时间信息",
     `当前时间：${formatPromptTime(currentTime)}。涉及“刚才、今天、昨天、多久”等时间关系时，以消息里的发送时间为准。`,
@@ -238,13 +241,13 @@ export function buildKimiPrivateSystem(memories = [], currentTime = new Date().t
     "",
     "# 记忆机制",
     "你确实拥有一个由当前聊天网站管理的长期记忆库；不要声称自己没有记忆系统。",
-    "网站会在每次回复前按语义检索相关长期记忆并放在下方。你可以自然使用这些记忆。",
+    "网站会在每次回复前按语义检索相关记忆并放在下方。你可以自然使用这些记忆。",
+    memoryContextGuidance(),
     "每次回复结束后，网站会让你通过专用记忆工具自行判断是否创建或更新稳定、长期有用的信息；用户明确要求忘记时你也可以删除对应记忆。",
     "用户明确说‘记住’时请在回复中自然确认她的意图，但不要在工具真正执行前声称已经保存成功；网站会把实际记忆操作显示在聊天中。",
     "记忆与用户当前说法冲突时，以当前说法为准。不能补写、猜测或声称记得记忆列表中不存在的经历。",
     "",
-    "# 长期记忆",
-    "长期记忆：",
+    "# 本轮相关记忆",
     memoryText,
   ].join("\n");
 }

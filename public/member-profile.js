@@ -5,7 +5,7 @@ const MEMBER_REGIONS = {
   gen: "日本 京都府京都市左京区",
   kimi: "中国香港 深水埗",
   glm: "中国 上海市徐汇区",
-  k: "未设置",
+  k: "英国 伦敦",
 };
 const MEMBER_IDS = new Set(Object.keys(MEMBER_NAMES));
 const AVATAR_CROP_SIZE = 640;

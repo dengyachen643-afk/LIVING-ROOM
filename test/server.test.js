@@ -159,19 +159,16 @@ test("a failed Kimi private reply is persisted and available through status reco
   }, {}, { fetchImpl });
 });
 
-test("Kimi private reply finishes before background memory maintenance", async () => {
+test("ordinary Kimi replies no longer pay for legacy per-batch memory maintenance", async () => {
   let calls = 0;
-  let releaseCurator;
   const fetchImpl = async (_url, options) => {
     calls += 1;
     if (JSON.parse(options.body).stream) {
       const sse = ['data: {"choices":[{"delta":{"content":"回完了"}}]}', "data: [DONE]", ""].join("\n");
       return new Response(sse, { headers: { "content-type": "text/event-stream" } });
     }
-    return new Promise((resolve) => {
-      releaseCurator = () => resolve(new Response(JSON.stringify({ choices: [{ message: {} }] }), {
-        headers: { "content-type": "application/json" },
-      }));
+    return new Response(JSON.stringify({ choices: [{ message: {} }] }), {
+      headers: { "content-type": "application/json" },
     });
   };
   await withServer([], async (base) => {
@@ -189,9 +186,7 @@ test("Kimi private reply finishes before background memory maintenance", async (
     assert.equal(events.at(-1).type, "chat_done");
     assert.equal(events.find((event) => event.type === "message").message.content, "回完了");
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(calls, 3);
-    releaseCurator();
-    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 2);
   }, { KIMI_AUTO_MEMORY: "true", KIMI_MEMORY_BATCH_SIZE: "2" }, { fetchImpl });
 });
 
@@ -585,7 +580,7 @@ test("GLM uses its own API to maintain GLM memories from the group", async () =>
   assert.equal(memory.source, "glm-group-auto");
 });
 
-test("ordinary group memory maintenance is batched", async () => {
+test("ordinary group chat waits for the 30-round reviewer instead of legacy batching", async () => {
   let curatorCalls = 0;
   const provider = {
     id: "kimi", label: "Kimi", kind: "API", model: "test", available: true, unavailableReason: "",
@@ -609,7 +604,8 @@ test("ordinary group memory maintenance is batched", async () => {
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(curatorCalls, 0);
     await send(4);
-    await waitFor(() => curatorCalls === 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(curatorCalls, 0);
   }, {
     GROUP_AUTO_MEMORY: "true",
     GROUP_MEMORY_BATCH_SIZE: "4",

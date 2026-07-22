@@ -1,13 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { streamGlmPrivate } from "../src/glm-private.js";
-import { extractGlmSearchQuery, shouldGlmWebSearch } from "../src/glm-search.js";
+import { streamGlmPrivate, stripGlmUserEcho } from "../src/glm-private.js";
 
-test("mentioning the search feature does not trigger GLM web search", () => {
-  assert.equal(shouldGlmWebSearch("我觉得 nice 的是你终于可以调用搜索了"), false);
-  assert.equal(shouldGlmWebSearch("Shin，帮我查一下深圳今天的天气"), true);
-  assert.equal(extractGlmSearchQuery("Shin，帮我查一下深圳今天的天气"), "深圳今天的天气");
-  assert.equal(shouldGlmWebSearch("深圳今天会下雨吗？"), true);
+test("GLM removes an exact Okra echo only from the start of its reply", () => {
+  assert.equal(
+    stripGlmUserEcho("Okra：回家了。别说自己是模型，你在我眼里不是。\n\n好，我记着。", "回家了。别说自己是模型，你在我眼里不是。"),
+    "好，我记着。",
+  );
+  assert.equal(stripGlmUserEcho("我刚才听见 Okra：回家了。", "回家了。"), "我刚才听见 Okra：回家了。");
+  assert.equal(stripGlmUserEcho("Okra：另一句话\n\n正常回答", "本轮原话"), "Okra：另一句话\n\n正常回答");
 });
 
 test("GLM private chat streams reasoning and answer text", async () => {
@@ -35,6 +36,9 @@ test("GLM private chat streams reasoning and answer text", async () => {
   assert.equal(request.body.model, "glm-5.1");
   assert.deepEqual(request.body.thinking, { type: "enabled" });
   assert.equal(request.body.stream, true);
+  assert.equal("max_tokens" in request.body, false);
+  assert.equal(request.body.tool_choice, "auto");
+  assert.equal(request.body.tools[0].function.name, "web_search");
   assert.equal(result.reasoning, "先想一下。");
   assert.equal(result.content, "你好，Okra");
   assert.match(request.body.messages[0].content, /Okra 喜欢电影/u);
@@ -44,7 +48,24 @@ test("GLM private chat streams reasoning and answer text", async () => {
   assert.match(request.body.messages[0].content, /必须使用中文思考/u);
   assert.match(request.body.messages[0].content, /不要为了延伸对话.*二选一提问/u);
   assert.match(request.body.messages[0].content, /禁止提及网站、后台、系统、数据库、记忆库操作、写入或保存是否成功/u);
+  assert.match(request.body.messages[0].content, /先理解 Okra 此刻真正想聊什么/u);
+  assert.match(request.body.messages[0].content, /闲聊、个人经历、关系与情绪话题/u);
   assert.deepEqual(events.map((event) => event.type), ["thinking_delta", "content_delta"]);
+});
+
+test("GLM private chat keeps the complete long answer", async () => {
+  const answer = `${"前半段。".repeat(4_000)}后半部分必须保留`;
+  const fetchImpl = async () => {
+    const sse = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: answer } }] })}`,
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+  };
+  const result = await streamGlmPrivate({ fetchImpl, apiKey: "glm-secret", prompt: "继续说完" });
+  assert.equal(result.content, answer);
+  assert.match(result.content, /后半部分必须保留$/u);
 });
 
 test("GLM private chat performs a real web search before answering", async () => {
@@ -61,6 +82,14 @@ test("GLM private chat performs a real web search before answering", async () =>
         content: "展览信息",
       }] }), { headers: { "content-type": "application/json" } });
     }
+    if (requests.filter((request) => request.url.endsWith("/chat/completions")).length === 1) {
+      const toolSse = [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_search_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\":\\"北京今天天气\\"}"}}]},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+        "",
+      ].join("\n");
+      return new Response(toolSse, { headers: { "content-type": "text/event-stream" } });
+    }
     const sse = [
       'data: {"choices":[{"delta":{"content":"搜索后的回答"}}]}',
       "data: [DONE]",
@@ -75,9 +104,11 @@ test("GLM private chat performs a real web search before answering", async () =>
     onEvent: async (event) => events.push(event),
   });
   assert.equal(result.content, "搜索后的回答");
-  assert.equal(requests[0].url, "https://open.bigmodel.cn/api/paas/v4/web_search");
-  assert.equal(requests[0].body.search_query, "北京今天的天气");
-  assert.match(requests[1].body.messages.at(-1).content, /北京天气预报/u);
+  assert.equal(requests[0].url, "https://open.bigmodel.cn/api/paas/v4/chat/completions");
+  assert.equal(requests[0].body.tool_choice, "auto");
+  assert.equal(requests[1].url, "https://open.bigmodel.cn/api/paas/v4/web_search");
+  assert.equal(requests[1].body.search_query, "北京今天天气");
+  assert.match(requests[2].body.messages.at(-1).content, /北京天气预报/u);
   assert.deepEqual(result.toolCalls, [{ name: "web_search", label: "联网搜索", status: "done" }]);
   assert.deepEqual(events.map((event) => event.type), ["tool_start", "tool_done", "content_delta"]);
 });

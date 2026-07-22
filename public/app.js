@@ -1,4 +1,4 @@
-import { createMemberProfile } from "./member-profile.js?v=20260721-7";
+import { createMemberProfile } from "./member-profile.js?v=20260722-1";
 
 const els = {
   shell: document.querySelector("#app-shell"),
@@ -3136,7 +3136,7 @@ function isNearBottom(threshold = 96) {
 }
 
 function normalizeClientQuote(value) {
-  const text = [...String(value?.text || "").replace(/\s+/gu, " ").trim()].slice(0, 15).join("");
+  const text = [...String(value?.text || "").replace(/\s+/gu, " ").trim()].slice(0, 2_000).join("");
   if (!text) return null;
   const rawAuthor = String(value?.author || "").trim();
   const author = !rawAuthor || ["用户", "你", "okra"].includes(rawAuthor.toLowerCase())
